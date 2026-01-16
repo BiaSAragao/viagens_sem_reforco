@@ -44,7 +44,7 @@ st.title("🚌 Viagens Não Realizadas sem Reforço")
 # UPLOAD
 # ==================================================
 uploaded_file = st.file_uploader(
-    "📁 Envie a planilha (Excel, CSV ou TXT)",
+    "📁 Envie a planilha CSV",
     type=["xlsx", "csv", "txt"]
 )
 
@@ -156,3 +156,4 @@ if uploaded_file is not None:
 else:
 
     st.info("⬆️ Envie a planilha para iniciar a análise operacional.")
+
