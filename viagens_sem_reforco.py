@@ -39,7 +39,6 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("🚌 Viagens Não Realizadas sem Reforço")
-st.caption("Filtro: Exceto empresas 'ROSA' • Cores: PC1 (Laranja) | PC2 (Azul)")
 
 # ==================================================
 # UPLOAD
@@ -155,4 +154,5 @@ if uploaded_file is not None:
             st.markdown("---")
 
 else:
+
     st.info("⬆️ Envie a planilha para iniciar a análise operacional.")
