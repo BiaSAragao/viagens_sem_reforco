@@ -81,8 +81,8 @@ def executar_analise_original(uploaded_file, termo_manter, termo_ignorar):
     df["inicio_programado"] = pd.to_datetime(df["inicio_programado"], errors="coerce")
 
     df = df[df["sentido"] != "ocioso"]
-    nao_realizadas = df[df["atividade"] == "não realizada"]
-    reforcos = df[df["atividade"] == "reforço"]
+    nao_realizadas = df[df["atividade"] == "Não realizada"]
+    reforcos = df[df["atividade"] == "Reforço"]
 
     # ---------- PAREAMENTO 1x1 (Lógica idêntica ao seu código original) ----------
     falhas = []
@@ -154,3 +154,4 @@ with tab_rosa:
                             st.session_state.validacoes[btn_key] = True
                             st.rerun()
                 st.markdown("---")
+
