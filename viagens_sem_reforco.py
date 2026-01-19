@@ -112,8 +112,8 @@ def processar_viagens(uploaded_file, empresa_nome):
     df["inicio_programado"] = pd.to_datetime(df["inicio_programado"], errors="coerce")
     df = df[df["sentido"] != "ocioso"]
 
-    nao_realizadas = df[df["atividade"] == "não realizada"]
-    reforcos = df[df["atividade"] == "reforço"]
+    nao_realizadas = df[df["atividade"] == "Não realizada"]
+    reforcos = df[df["atividade"] == "Reforço"]
 
     # ---------- Pareamento ----------
     falhas = []
@@ -204,3 +204,4 @@ with tab_sj:
 
 with tab_rosa:
     processar_viagens(file_rosa, "ROSA")
+
