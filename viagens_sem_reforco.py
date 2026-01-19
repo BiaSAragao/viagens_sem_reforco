@@ -104,8 +104,8 @@ def processar_viagens(uploaded_file, manter_termo, ignorar_termo):
     
     df = df[df["sentido"] != "ocioso"]
 
-    nao_realizadas = df[df["atividade"] == "não realizada"]
-    reforcos = df[df["atividade"] == "reforço"]
+    nao_realizadas = df[df["atividade"] == "Não realizada"]
+    reforcos = df[df["atividade"] == "Reforço"]
 
     # ---------- Pareamento 1x1 ----------
     falhas = []
@@ -191,3 +191,4 @@ with tab_rosa:
             st.warning("⚠️ Nenhum dado encontrado para ROSA neste arquivo.")
     else:
         st.info("⬆️ Envie a planilha da Rosa na barra lateral.")
+
