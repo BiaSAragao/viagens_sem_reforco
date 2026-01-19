@@ -15,7 +15,7 @@ st.set_page_config(
 if "validacoes" not in st.session_state:
     st.session_state.validacoes = {}
 
-# CSS original + ajuste de alinhamento
+# CSS para garantir alinhamento à esquerda e cores
 st.markdown("""
     <style>
     .pc1-box {
@@ -38,21 +38,21 @@ st.title("🚌 Viagens Não Realizadas sem Reforço")
 # BARRA LATERAL
 # ==================================================
 st.sidebar.header("📁 Upload de Arquivos")
-file_sj = st.sidebar.file_uploader("Planilha SÃO JOÃO", type=["xlsx", "csv", "txt"])
-file_rosa = st.sidebar.file_uploader("Planilha ROSA", type=["xlsx", "csv", "txt"])
+file_sj = st.sidebar.file_uploader("Planilha para aba SÃO JOÃO", type=["xlsx", "csv", "txt"])
+file_rosa = st.sidebar.file_uploader("Planilha para aba ROSA", type=["xlsx", "csv", "txt"])
 
 if st.sidebar.button("Limpar todas as conferências"):
     st.session_state.validacoes = {}
     st.rerun()
 
 # ==================================================
-# FUNÇÃO DE PROCESSAMENTO (IGUAL AO SEU CÓDIGO)
+# FUNÇÃO DE PROCESSAMENTO
 # ==================================================
-def processar_empresa(uploaded_file, termo_manter, termo_ignorar):
+def processar_dados(uploaded_file, termo_para_ignorar):
     if uploaded_file is None:
         return None
 
-    # Leitura original
+    # Leitura
     if uploaded_file.name.lower().endswith(".xlsx"):
         df = pd.read_excel(uploaded_file)
     else:
@@ -68,16 +68,14 @@ def processar_empresa(uploaded_file, termo_manter, termo_ignorar):
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_programado"]
 
-    # FILTRO EXATO DO SEU EXEMPLO
+    # FILTRO: APENAS IGNORA A OUTRA EMPRESA
     df["empresa"] = df["empresa"].astype(str).str.upper()
-    # Para São João: mantém SAO JOAO e tira ROSA. Para Rosa: mantém ROSA e tira SAO JOAO.
-    df = df[df["empresa"].str.contains(termo_manter, na=False)]
-    df = df[~df["empresa"].str.contains(termo_ignorar, na=False)]
+    df = df[~df["empresa"].str.contains(termo_para_ignorar, na=False)]
 
     if df.empty:
         return "vazio"
 
-    # Tratamentos originais
+    # Tratamentos de Dados
     df["linha"] = df["linha"].astype(str).str.strip()
     df["sentido"] = df["sentido"].astype(str).str.lower().str.strip()
     df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
@@ -87,7 +85,7 @@ def processar_empresa(uploaded_file, termo_manter, termo_ignorar):
     nao_realizadas = df[df["atividade"] == "não realizada"]
     reforcos = df[df["atividade"] == "reforço"]
 
-    # Pareamento 1x1 original
+    # Pareamento 1x1
     falhas = []
     for (linha, sentido), grupo_nr in nao_realizadas.groupby(["linha", "sentido"]):
         grupo_ref = reforcos[(reforcos["linha"] == linha) & (reforcos["sentido"] == sentido)].sort_values("inicio_programado").copy()
@@ -108,24 +106,22 @@ def processar_empresa(uploaded_file, termo_manter, termo_ignorar):
 # ==================================================
 tab1, tab2 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA"])
 
+# ABA SÃO JOÃO: Processa o arquivo ignorando apenas a "ROSA"
 with tab1:
-    res_sj = processar_empresa(file_sj, "SAO JOAO", "ROSA")
+    res_sj = processar_dados(file_sj, "ROSA")
     if isinstance(res_sj, pd.DataFrame):
         if res_sj.empty:
-            st.success("✅ Nenhuma falha encontrada para São João.")
+            st.success("✅ Nenhuma falha encontrada.")
         else:
             for linha in sorted(res_sj["linha"].unique()):
                 st.markdown(f"## 🚍 Linha {linha}")
-                df_l = res_sj[res_sj["linha"] == linha]
-                for _, row in df_l.iterrows():
+                for _, row in res_sj[res_sj["linha"] == linha].iterrows():
                     h = row["inicio_programado"].strftime("%H:%M")
                     pc = "PC1" if row["sentido"] == "ida" else "PC2"
                     id_v = f"sj_{linha}_{h}_{pc}"
-                    
                     st.markdown(f"**🕒 Horário: {h}**")
                     cor = "pc1-box" if pc == "PC1" else "pc2-box"
                     st.markdown(f'<div class="{cor}">{pc} — Não Realizada</div>', unsafe_allow_html=True)
-                    
                     if id_v in st.session_state.validacoes:
                         st.markdown('<div class="status-check">✅ Realizada de acordo com e-CITOP</div>', unsafe_allow_html=True)
                     else:
@@ -134,24 +130,22 @@ with tab1:
                             st.rerun()
                 st.markdown("---")
 
+# ABA ROSA: Processa o arquivo ignorando apenas a "SAO JOAO"
 with tab2:
-    res_rosa = processar_empresa(file_rosa, "ROSA", "SAO JOAO")
+    res_rosa = processar_dados(file_rosa, "SAO JOAO")
     if isinstance(res_rosa, pd.DataFrame):
         if res_rosa.empty:
-            st.success("✅ Nenhuma falha encontrada para Rosa.")
+            st.success("✅ Nenhuma falha encontrada.")
         else:
             for linha in sorted(res_rosa["linha"].unique()):
                 st.markdown(f"## 🚍 Linha {linha}")
-                df_l = res_rosa[res_rosa["linha"] == linha]
-                for _, row in df_l.iterrows():
+                for _, row in res_rosa[res_rosa["linha"] == linha].iterrows():
                     h = row["inicio_programado"].strftime("%H:%M")
                     pc = "PC1" if row["sentido"] == "ida" else "PC2"
                     id_v = f"rosa_{linha}_{h}_{pc}"
-                    
                     st.markdown(f"**🕒 Horário: {h}**")
                     cor = "pc1-box" if pc == "PC1" else "pc2-box"
                     st.markdown(f'<div class="{cor}">{pc} — Não Realizada</div>', unsafe_allow_html=True)
-                    
                     if id_v in st.session_state.validacoes:
                         st.markdown('<div class="status-check">✅ Realizada de acordo com e-CITOP</div>', unsafe_allow_html=True)
                     else:
