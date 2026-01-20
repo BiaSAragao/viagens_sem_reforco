@@ -56,35 +56,54 @@ def carregar_ecitop(file):
 def processar_base(file, termo_ignorar):
     if file is None: return None
     try:
-        # Mesma lógica de encoding para a base
+        # Tenta ler com os dois encodings possíveis
         try:
             df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
         except:
             df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
             
-        # A(0): Empresa, B(1): Linha, D(3): Sentido, G(6): Atividade, O(14): Programado
-        df = df.iloc[:, [0, 1, 3, 6, 14]]
-        df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
+        # Em vez de iloc (números), vamos usar os nomes reais das colunas que vi no seu arquivo
+        colunas_necessarias = {
+            "Empresa": "empresa",
+            "Linha": "linha",
+            "Sentido": "sentido",
+            "Atividade": "atividade",
+            "Início Programado": "inicio_prog"
+        }
         
-        df = df[~df["empresa"].astype(str).str.contains(termo_ignorar.upper(), na=False)]
+        # Filtra apenas as colunas que existem no seu CSV
+        df = df[list(colunas_necessarias.keys())]
+        df.rename(columns=colunas_necessarias, inplace=True)
+        
+        # Filtro de operadora (ignora a outra empresa)
+        df = df[~df["empresa"].astype(str).str.upper().str.contains(termo_ignorar.upper(), na=False)]
+        
+        # Converte horários
         df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], dayfirst=True, errors='coerce')
-        df["linha_limpa"] = df["linha"].astype(str).str.lstrip('0')
-        df["atividade"] = df["atividade"].astype(str).str.lower()
+        df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
+        df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
         
+        # Separa Não Realizadas e Reforços
         nr = df[df["atividade"] == "não realizada"].copy()
         ref = df[df["atividade"] == "reforço"].copy()
         
         falhas = []
+        # Agrupa por linha e sentido para comparar com reforços
         for (lin, sen), grupo_nr in nr.groupby(["linha_limpa", "sentido"]):
             grupo_ref = ref[(ref["linha_limpa"] == lin) & (ref["sentido"] == sen)].sort_values("inicio_prog")
             grupo_ref["usado"] = False
+            
             for _, row_nr in grupo_nr.sort_values("inicio_prog").iterrows():
+                # Procura reforço na mesma linha/sentido com janela de 15 min
                 cands = grupo_ref[(~grupo_ref["usado"]) & (abs(grupo_ref["inicio_prog"] - row_nr["inicio_prog"]) <= timedelta(minutes=15))]
-                if cands.empty: falhas.append(row_nr)
-                else: grupo_ref.loc[cands.index[0], "usado"] = True
+                if cands.empty:
+                    falhas.append(row_nr)
+                else:
+                    grupo_ref.loc[cands.index[0], "usado"] = True
+                    
         return pd.DataFrame(falhas)
     except Exception as e:
-        st.error(f"Erro na Base: {e}")
+        st.error(f"Erro ao processar colunas da Base: {e}")
         return None
 
 # ==================================================
@@ -141,3 +160,4 @@ def exibir(df_falhas, df_citop, operadora_alvo, prefixo):
 
 with t1: exibir(processar_base(f_sj, "ROSA"), df_citop_geral, "SAO JOAO", "sj")
 with t2: exibir(processar_base(f_rs, "SAO JOAO"), df_citop_geral, "ROSA", "rs")
+
