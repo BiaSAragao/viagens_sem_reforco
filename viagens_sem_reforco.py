@@ -10,7 +10,6 @@ st.set_page_config(page_title="Monitor e-CITOP", page_icon="🚌", layout="wide"
 if "validacoes" not in st.session_state:
     st.session_state.validacoes = {}
 
-# Estilos Visuais
 st.markdown("""
     <style>
     .pc1-box { padding: 10px; border-radius: 5px; background-color: #FFA500; color: white; font-weight: bold; margin-bottom: 5px; width: 280px; }
@@ -20,25 +19,31 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==================================================
-# PROCESSAMENTO DE DADOS
+# FUNÇÕES DE PROCESSAMENTO (CORRIGIDAS)
 # ==================================================
 
 def carregar_ecitop(file):
     if file is None: return None
     try:
-        # Lendo e-CITOP (Mapa de Controle Operacional)
-        df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
+        # TRATAMENTO DE ERRO DE ENCODING (RESOLVE O CHARMAP CODEC)
+        if file.name.lower().endswith('.xlsx'):
+            df = pd.read_excel(file)
+        else:
+            try:
+                # Tenta ler com UTF-8
+                df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
+            except (UnicodeDecodeError, UnicodeError):
+                # Se der erro, tenta com CP1252 (Padrão Windows)
+                df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
         
-        # Colunas Reais do seu arquivo:
-        # B(1): Nome Operadora | E(4): Código Externo Linha | G(6): Num Terminal | H(7): Viagem | AA(26): Data Hora Saída Terminal
+        # Mapeamento das colunas baseado no seu arquivo real
+        # B(1): Operadora, E(4): Linha, G(6): Num Terminal, H(7): Viagem, AA(26): Data Saída
         df = df.iloc[:, [1, 4, 6, 7, 26]] 
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida_real"]
         
-        # Limpeza
+        # Filtros e Limpeza
         df = df[df["num_terminal"].astype(str) != "0"]
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
-        
-        # Ajuste de Horário e Linha
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors='coerce')
         df["linha_limpa"] = df["linha"].astype(str).str.lstrip('0')
         df["operadora"] = df["operadora"].astype(str).str.upper()
@@ -51,20 +56,21 @@ def carregar_ecitop(file):
 def processar_base(file, termo_ignorar):
     if file is None: return None
     try:
-        # Lendo Base (Exportação Viagem)
-        df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
-        
-        # Colunas Reais: A(0): Empresa | B(1): Linha | D(3): Sentido | G(6): Atividade | O(14): Início Programado
+        # Mesma lógica de encoding para a base
+        try:
+            df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
+        except:
+            df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
+            
+        # A(0): Empresa, B(1): Linha, D(3): Sentido, G(6): Atividade, O(14): Programado
         df = df.iloc[:, [0, 1, 3, 6, 14]]
         df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
         
-        # Filtros
-        df = df[~df["empresa"].astype(str).str.contains(termo_ignorar, na=False)]
+        df = df[~df["empresa"].astype(str).str.contains(termo_ignorar.upper(), na=False)]
         df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], dayfirst=True, errors='coerce')
         df["linha_limpa"] = df["linha"].astype(str).str.lstrip('0')
         df["atividade"] = df["atividade"].astype(str).str.lower()
         
-        # Lógica de Reforço
         nr = df[df["atividade"] == "não realizada"].copy()
         ref = df[df["atividade"] == "reforço"].copy()
         
@@ -82,12 +88,12 @@ def processar_base(file, termo_ignorar):
         return None
 
 # ==================================================
-# INTERFACE STREAMLIT
+# INTERFACE
 # ==================================================
-st.title("📊 Monitor de Validação e-CITOP")
+st.title("📊 Validação e-CITOP (Corrigido)")
 
 with st.sidebar:
-    st.header("📂 Carregar Dados")
+    st.header("📂 Arquivos")
     f_sj = st.file_uploader("Base SÃO JOÃO", type=["csv"])
     f_rs = st.file_uploader("Base ROSA", type=["csv"])
     st.divider()
@@ -99,28 +105,24 @@ t1, t2 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA"])
 
 def exibir(df_falhas, df_citop, operadora_alvo, prefixo):
     if df_falhas is not None and not df_falhas.empty:
-        # Filtra e-CITOP pela operadora
         df_c = None
         if df_citop is not None:
-            df_c = df_citop[df_citop["operadora"].str.contains(operadora_alvo, na=False)]
+            df_c = df_citop[df_citop["operadora"].str.contains(operadora_alvo.upper(), na=False)]
 
         for linha in sorted(df_falhas["linha_limpa"].unique()):
             st.markdown(f"### 🚍 Linha {linha}")
             for _, row in df_falhas[df_falhas["linha_limpa"] == linha].iterrows():
                 h_prog = row["inicio_prog"]
-                sentido = row["sentido"]
-                # Mapeia: Ida -> 1, Volta -> 2
-                term_alvo = "1" if sentido.lower() == "ida" else "2"
+                sentido = str(row["sentido"])
+                term_alvo = "1" if "ida" in sentido.lower() else "2"
                 
                 st.write(f"**🕒 Programado: {h_prog.strftime('%H:%M')}**")
                 classe = "pc1-box" if term_alvo == "1" else "pc2-box"
                 st.markdown(f'<div class="{classe}">{sentido} — Não Realizada</div>', unsafe_allow_html=True)
                 
-                # AUTO-CHECK
                 check_ok = False
                 if df_c is not None:
                     match = df_c[(df_c["linha_limpa"] == linha) & (df_c["num_terminal"].astype(str) == term_alvo)]
-                    # Compara se há saída em até 10 min
                     match_time = match[abs(match["saida_real"] - h_prog) <= timedelta(minutes=10)]
                     
                     if not match_time.empty:
@@ -128,17 +130,14 @@ def exibir(df_falhas, df_citop, operadora_alvo, prefixo):
                         h_real = match_time.iloc[0]["saida_real"].strftime("%H:%M:%S")
                         st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP (Saída: {h_real})</div>', unsafe_allow_html=True)
 
-                # Botões Manuais
                 id_btn = f"{prefixo}_{linha}_{h_prog.strftime('%H%M')}_{term_alvo}"
                 if not check_ok:
                     if id_btn in st.session_state.validacoes:
-                        if st.button("✅ Validado Manual (Desfazer)", key=id_btn, type="primary"):
-                            del st.session_state.validacoes[id_btn]; st.rerun()
+                        st.success("Validado Manualmente")
                     else:
                         st.button("Confirmar Manualmente", key=id_btn, on_click=lambda id=id_btn: st.session_state.validacoes.update({id:True}))
             st.markdown("---")
-    else:
-        st.info("Aguardando arquivos...")
+    else: st.info("Aguardando arquivos...")
 
 with t1: exibir(processar_base(f_sj, "ROSA"), df_citop_geral, "SAO JOAO", "sj")
 with t2: exibir(processar_base(f_rs, "SAO JOAO"), df_citop_geral, "ROSA", "rs")
