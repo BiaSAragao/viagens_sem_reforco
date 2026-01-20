@@ -25,27 +25,29 @@ st.markdown("""
 def carregar_ecitop_unico(file):
     if file is None: return None
     try:
+        # Se for Excel (.xlsx), a leitura é direta
         if file.name.lower().endswith('.xlsx'):
             df = pd.read_excel(file)
         else:
-            # Tenta UTF-8, se falhar tenta CP1252 (comum em sistemas Windows/Excel)
+            # TENTA UTF-8 PRIMEIRO, SE DER ERRO (CHARMAP), TENTA CP1252
             try:
                 df = pd.read_csv(file, sep=None, engine='python', encoding='utf-8')
-            except UnicodeDecodeError:
+            except (UnicodeDecodeError, UnicodeError):
                 df = pd.read_csv(file, sep=None, engine='python', encoding='cp1252')
         
-        # Seleção das colunas solicitadas: B(1), E(4), G(6), H(7), O(14)
+        # Seleção das colunas e-CITOP: B(1), E(4), G(6), H(7), O(14)
         df = df.iloc[:, [1, 4, 6, 7, 14]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida"]
         
-        # Filtros e-CITOP
+        # Limpeza e Filtros
         df["operadora"] = df["operadora"].astype(str).str.upper()
         df = df[df["num_terminal"].astype(str) != "0"]
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
         
-        # Converte saída e remove data inválida
+        # Converte para data e remove linhas onde o horário falhou
         df["saida"] = pd.to_datetime(df["saida"], errors='coerce')
         df = df.dropna(subset=["saida"])
+        
         df["linha"] = df["linha"].astype(str).str.strip()
         return df
     except Exception as e:
@@ -163,3 +165,4 @@ with tab1:
 
 with tab2:
     exibir_resultados(processar_base(file_rs_base, "SAO JOAO"), df_ecitop_geral, "ROSA", "rs")
+
