@@ -22,7 +22,7 @@ st.markdown("""
 # FUNÇÕES DE PROCESSAMENTO
 # ==================================================
 
-def processar_ecitop(file, termo_operadora):
+def carregar_ecitop_unico(file):
     if file is None: return None
     try:
         # Colunas e-CITOP: B(1) Operadora, E(4) Linha, G(6) Num Terminal, H(7) Viagem, O(14) Saída
@@ -30,14 +30,10 @@ def processar_ecitop(file, termo_operadora):
         df = df.iloc[:, [1, 4, 6, 7, 14]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida"]
         
-        # Filtros e-CITOP
+        # Limpeza básica comum
         df["operadora"] = df["operadora"].astype(str).str.upper()
-        df = df[df["operadora"].str.contains(termo_operadora, na=False)]
-        
-        # Ignora Ociosas (Num Terminal 0 ou texto Oci.)
         df = df[df["num_terminal"].astype(str) != "0"]
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
-        
         df["saida"] = pd.to_datetime(df["saida"], errors='coerce')
         df["linha"] = df["linha"].astype(str).str.strip()
         return df
@@ -47,7 +43,6 @@ def processar_ecitop(file, termo_operadora):
 
 def processar_base(file, termo_ignorar):
     if file is None: return None
-    # Colunas Base: A(0), B(1), D(3), G(6), O(14)
     df = pd.read_excel(file) if file.name.endswith('.xlsx') else pd.read_csv(file, sep=None, engine='python', encoding='cp1252')
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio"]
@@ -76,22 +71,29 @@ def processar_base(file, termo_ignorar):
 # ==================================================
 # INTERFACE
 # ==================================================
-st.title("🚌 Monitor Operacional: Base vs e-CITOP (PC1/PC2)")
+st.title("🚌 Monitor: Cruzamento com e-CITOP Único")
 
 with st.sidebar:
-    st.header("📂 Arquivos")
-    st.subheader("São João")
-    sj_base = st.file_uploader("Base SJ", type=["xlsx", "csv"], key="b1")
-    sj_citop = st.file_uploader("e-CITOP SJ", type=["xlsx", "csv"], key="c1")
+    st.header("📂 Arquivos Base")
+    file_sj_base = st.file_uploader("Base SÃO JOÃO", type=["xlsx", "csv"], key="b1")
+    file_rs_base = st.file_uploader("Base ROSA", type=["xlsx", "csv"], key="b2")
+    
     st.divider()
-    st.subheader("Rosa")
-    rs_base = st.file_uploader("Base Rosa", type=["xlsx", "csv"], key="b2")
-    rs_citop = st.file_uploader("e-CITOP Rosa", type=["xlsx", "csv"], key="c2")
+    st.header("📂 Relatório e-CITOP")
+    file_ecitop = st.file_uploader("Planilha Única e-CITOP (Rosa + SJ)", type=["xlsx", "csv"], key="ce")
+
+# Processa o e-CITOP uma única vez
+df_ecitop_geral = carregar_ecitop_unico(file_ecitop)
 
 tab1, tab2 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA"])
 
-def exibir(df_falhas, df_citop, prefixo):
+def exibir_resultados(df_falhas, df_ecitop, termo_operadora, prefixo):
     if df_falhas is not None and not df_falhas.empty:
+        # Filtra o e-CITOP apenas para a operadora desta aba
+        df_citop_aba = None
+        if df_ecitop is not None:
+            df_citop_aba = df_ecitop[df_ecitop["operadora"].str.contains(termo_operadora, na=False)]
+
         for linha in sorted(df_falhas["linha"].unique()):
             st.markdown(f"### 🚍 Linha {linha}")
             df_l = df_falhas[df_falhas["linha"] == linha]
@@ -99,7 +101,6 @@ def exibir(df_falhas, df_citop, prefixo):
             for _, row in df_l.iterrows():
                 h_prog = row["inicio"]
                 sentido_base = row["sentido_limpo"]
-                # Mapeia Sentido para Num Terminal
                 num_term_alvo = "1" if "ida" in sentido_base or "pc1" in sentido_base else "2"
                 
                 id_v = f"{prefixo}_{linha}_{h_prog.strftime('%H%M')}_{num_term_alvo}"
@@ -109,15 +110,13 @@ def exibir(df_falhas, df_citop, prefixo):
                 label_pc = "PC1 (Ida)" if num_term_alvo == "1" else "PC2 (Volta)"
                 st.markdown(f'<div class="{cor}">{label_pc} — Não Realizada</div>', unsafe_allow_html=True)
                 
-                # Validação automática com e-CITOP
                 confirmado_auto = False
-                if df_citop is not None:
-                    # Filtra por linha e num_terminal (sentido)
-                    match = df_citop[
-                        (df_citop["linha"] == str(linha)) & 
-                        (df_citop["num_terminal"].astype(str) == num_term_alvo)
+                if df_citop_aba is not None:
+                    # Busca exata no e-CITOP filtrado pela operadora
+                    match = df_citop_aba[
+                        (df_citop_aba["linha"] == str(linha)) & 
+                        (df_citop_aba["num_terminal"].astype(str) == num_term_alvo)
                     ]
-                    # Verifica janela de 10 minutos
                     match_time = match[abs(match["saida"] - h_prog) <= timedelta(minutes=10)]
                     
                     if not match_time.empty:
@@ -133,7 +132,11 @@ def exibir(df_falhas, df_citop, prefixo):
                         if st.button("Confirmar no e-CITOP", key=id_v):
                             st.session_state.validacoes[id_v] = True; st.rerun()
             st.markdown("---")
-    else: st.info("Aguardando upload dos arquivos correspondentes...")
+    else:
+        st.info("Aguardando upload dos arquivos...")
 
-with tab1: exibir(processar_base(sj_base, "ROSA"), processar_ecitop(sj_citop, "SAO JOAO"), "sj")
-with tab2: exibir(processar_base(rs_base, "SAO JOAO"), processar_ecitop(rs_citop, "ROSA"), "rs")
+with tab1:
+    exibir_resultados(processar_base(file_sj_base, "ROSA"), df_ecitop_geral, "SAO JOAO", "sj")
+
+with tab2:
+    exibir_resultados(processar_base(file_rs_base, "SAO JOAO"), df_ecitop_geral, "ROSA", "rs")
