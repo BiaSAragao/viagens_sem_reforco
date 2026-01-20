@@ -19,22 +19,33 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==================================================
-# FUNÇÕES DE PROCESSAMENTO
+# FUNÇÕES DE PROCESSAMENTO (CORRIGIDAS)
 # ==================================================
 
 def carregar_ecitop_unico(file):
     if file is None: return None
     try:
-        # Colunas e-CITOP: B(1) Operadora, E(4) Linha, G(6) Num Terminal, H(7) Viagem, O(14) Saída
-        df = pd.read_excel(file) if file.name.endswith('.xlsx') else pd.read_csv(file, sep=None, engine='python', encoding='cp1252')
+        if file.name.lower().endswith('.xlsx'):
+            df = pd.read_excel(file)
+        else:
+            # Tenta UTF-8, se falhar tenta CP1252 (comum em sistemas Windows/Excel)
+            try:
+                df = pd.read_csv(file, sep=None, engine='python', encoding='utf-8')
+            except UnicodeDecodeError:
+                df = pd.read_csv(file, sep=None, engine='python', encoding='cp1252')
+        
+        # Seleção das colunas solicitadas: B(1), E(4), G(6), H(7), O(14)
         df = df.iloc[:, [1, 4, 6, 7, 14]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida"]
         
-        # Limpeza básica comum
+        # Filtros e-CITOP
         df["operadora"] = df["operadora"].astype(str).str.upper()
         df = df[df["num_terminal"].astype(str) != "0"]
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
+        
+        # Converte saída e remove data inválida
         df["saida"] = pd.to_datetime(df["saida"], errors='coerce')
+        df = df.dropna(subset=["saida"])
         df["linha"] = df["linha"].astype(str).str.strip()
         return df
     except Exception as e:
@@ -43,30 +54,43 @@ def carregar_ecitop_unico(file):
 
 def processar_base(file, termo_ignorar):
     if file is None: return None
-    df = pd.read_excel(file) if file.name.endswith('.xlsx') else pd.read_csv(file, sep=None, engine='python', encoding='cp1252')
-    df = df.iloc[:, [0, 1, 3, 6, 14]]
-    df.columns = ["empresa", "linha", "sentido", "atividade", "inicio"]
-    
-    df["empresa"] = df["empresa"].astype(str).str.upper()
-    df = df[~df["empresa"].str.contains(termo_ignorar, na=False)]
-    
-    df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
-    df["inicio"] = pd.to_datetime(df["inicio"], errors='coerce')
-    df["sentido_limpo"] = df["sentido"].astype(str).str.lower().str.strip()
-    df = df[df["sentido_limpo"] != "ocioso"]
-    
-    nao_realizadas = df[df["atividade"] == "não realizada"]
-    reforcos = df[df["atividade"] == "reforço"]
-    
-    falhas = []
-    for (linha, sentido), grupo_nr in nao_realizadas.groupby(["linha", "sentido_limpo"]):
-        grupo_ref = reforcos[(reforcos["linha"] == linha) & (reforcos["sentido_limpo"] == sentido)].sort_values("inicio")
-        grupo_ref["usado"] = False
-        for _, nr in grupo_nr.sort_values("inicio").iterrows():
-            cands = grupo_ref[(~grupo_ref["usado"]) & (abs(grupo_ref["inicio"] - nr["inicio"]) <= timedelta(minutes=15))]
-            if cands.empty: falhas.append(nr)
-            else: grupo_ref.loc[cands.index[0], "usado"] = True
-    return pd.DataFrame(falhas)
+    try:
+        if file.name.lower().endswith('.xlsx'):
+            df = pd.read_excel(file)
+        else:
+            try:
+                df = pd.read_csv(file, sep=None, engine='python', encoding='utf-8')
+            except UnicodeDecodeError:
+                df = pd.read_csv(file, sep=None, engine='python', encoding='cp1252')
+
+        df = df.iloc[:, [0, 1, 3, 6, 14]]
+        df.columns = ["empresa", "linha", "sentido", "atividade", "inicio"]
+        
+        df["empresa"] = df["empresa"].astype(str).str.upper()
+        df = df[~df["empresa"].str.contains(termo_ignorar, na=False)]
+        
+        df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
+        df["inicio"] = pd.to_datetime(df["inicio"], errors='coerce')
+        df = df.dropna(subset=["inicio"])
+        
+        df["sentido_limpo"] = df["sentido"].astype(str).str.lower().str.strip()
+        df = df[df["sentido_limpo"] != "ocioso"]
+        
+        nao_realizadas = df[df["atividade"] == "não realizada"]
+        reforcos = df[df["atividade"] == "reforço"]
+        
+        falhas = []
+        for (linha, sentido), grupo_nr in nao_realizadas.groupby(["linha", "sentido_limpo"]):
+            grupo_ref = reforcos[(reforcos["linha"] == linha) & (reforcos["sentido_limpo"] == sentido)].sort_values("inicio")
+            grupo_ref["usado"] = False
+            for _, nr in grupo_nr.sort_values("inicio").iterrows():
+                cands = grupo_ref[(~grupo_ref["usado"]) & (abs(grupo_ref["inicio"] - nr["inicio"]) <= timedelta(minutes=15))]
+                if cands.empty: falhas.append(nr)
+                else: grupo_ref.loc[cands.index[0], "usado"] = True
+        return pd.DataFrame(falhas)
+    except Exception as e:
+        st.error(f"Erro ao ler Base: {e}")
+        return None
 
 # ==================================================
 # INTERFACE
@@ -75,21 +99,19 @@ st.title("🚌 Monitor: Cruzamento com e-CITOP Único")
 
 with st.sidebar:
     st.header("📂 Arquivos Base")
-    file_sj_base = st.file_uploader("Base SÃO JOÃO", type=["xlsx", "csv"], key="b1")
-    file_rs_base = st.file_uploader("Base ROSA", type=["xlsx", "csv"], key="b2")
+    file_sj_base = st.file_uploader("Base SÃO JOÃO", type=["xlsx", "csv", "txt"], key="b1")
+    file_rs_base = st.file_uploader("Base ROSA", type=["xlsx", "csv", "txt"], key="b2")
     
     st.divider()
     st.header("📂 Relatório e-CITOP")
-    file_ecitop = st.file_uploader("Planilha Única e-CITOP (Rosa + SJ)", type=["xlsx", "csv"], key="ce")
+    file_ecitop = st.file_uploader("Planilha Única e-CITOP", type=["xlsx", "csv", "txt"], key="ce")
 
-# Processa o e-CITOP uma única vez
 df_ecitop_geral = carregar_ecitop_unico(file_ecitop)
 
 tab1, tab2 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA"])
 
 def exibir_resultados(df_falhas, df_ecitop, termo_operadora, prefixo):
     if df_falhas is not None and not df_falhas.empty:
-        # Filtra o e-CITOP apenas para a operadora desta aba
         df_citop_aba = None
         if df_ecitop is not None:
             df_citop_aba = df_ecitop[df_ecitop["operadora"].str.contains(termo_operadora, na=False)]
@@ -101,7 +123,8 @@ def exibir_resultados(df_falhas, df_ecitop, termo_operadora, prefixo):
             for _, row in df_l.iterrows():
                 h_prog = row["inicio"]
                 sentido_base = row["sentido_limpo"]
-                num_term_alvo = "1" if "ida" in sentido_base or "pc1" in sentido_base else "2"
+                # 1 = Ida/PC1, 2 = Volta/PC2
+                num_term_alvo = "1" if any(x in sentido_base for x in ["ida", "pc1"]) else "2"
                 
                 id_v = f"{prefixo}_{linha}_{h_prog.strftime('%H%M')}_{num_term_alvo}"
                 st.write(f"**🕒 Programado: {h_prog.strftime('%H:%M')}**")
@@ -112,9 +135,9 @@ def exibir_resultados(df_falhas, df_ecitop, termo_operadora, prefixo):
                 
                 confirmado_auto = False
                 if df_citop_aba is not None:
-                    # Busca exata no e-CITOP filtrado pela operadora
+                    # Compara string com string na linha para evitar erro de tipo
                     match = df_citop_aba[
-                        (df_citop_aba["linha"] == str(linha)) & 
+                        (df_citop_aba["linha"].astype(str) == str(linha)) & 
                         (df_citop_aba["num_terminal"].astype(str) == num_term_alvo)
                     ]
                     match_time = match[abs(match["saida"] - h_prog) <= timedelta(minutes=10)]
@@ -133,7 +156,7 @@ def exibir_resultados(df_falhas, df_ecitop, termo_operadora, prefixo):
                             st.session_state.validacoes[id_v] = True; st.rerun()
             st.markdown("---")
     else:
-        st.info("Aguardando upload dos arquivos...")
+        st.info("Aguardando upload dos arquivos correspondentes...")
 
 with tab1:
     exibir_resultados(processar_base(file_sj_base, "ROSA"), df_ecitop_geral, "SAO JOAO", "sj")
