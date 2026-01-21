@@ -22,10 +22,11 @@ st.markdown("""
 st.title("🚌 Monitor Unificado de Viagens")
 
 # ==================================================
-# FUNÇÕES DE APOIO (ORDENAÇÃO)
+# FUNÇÕES DE APOIO
 # ==================================================
 
 def custom_sort_lines(lista_linhas):
+    """Ordena números primeiro e strings com letras por último."""
     numericas = []
     alfanumericas = []
     for l in lista_linhas:
@@ -34,29 +35,28 @@ def custom_sort_lines(lista_linhas):
             numericas.append(l_str)
         else:
             alfanumericas.append(l_str)
-    # Números em ordem crescente + Alfanuméricos por último
     return sorted(numericas, key=int) + sorted(alfanumericas)
 
 # ==================================================
-# PROCESSAMENTO DOS ARQUIVOS
+# PROCESSAMENTO DOS DADOS
 # ==================================================
 
 def carregar_ecitop(file):
     if file is None: return None
     try:
-        # Lendo colunas fixas do e-CITOP
-        df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
+        try:
+            df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
+        except:
+            df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
         
-        # B(1) Operadora, E(4) Linha, G(6) Terminal, H(7) Viagem, AA(26) Saída
+        # Colunas fixas e-CITOP: B(1), E(4), G(6), H(7), AA(26)
         df = df.iloc[:, [1, 4, 6, 7, 26]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida_real"]
         
-        # Filtra ociosos
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
         
-        # Conversão robusta para o formato: 2026-01-12 05:41:18.0
+        # Converte o formato 2026-01-12 05:41:18.0
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors='coerce')
-        
         df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
         df["num_terminal"] = df["num_terminal"].astype(str).str.strip()
         
@@ -72,23 +72,22 @@ def processar_bases_unificadas(uploaded_files):
         try:
             if f.name.lower().endswith(".xlsx"): temp_df = pd.read_excel(f)
             else:
-                temp_df = pd.read_csv(f, sep=";", encoding="cp1252", engine="python")
+                try: temp_df = pd.read_csv(f, sep=";", encoding="cp1252", engine="python")
+                except: temp_df = pd.read_csv(f, sep=";", encoding="utf-8", engine="python")
             dfs.append(temp_df)
         except: continue
     
     if not dfs: return None
     df = pd.concat(dfs, ignore_index=True)
-    
-    # Colunas Base: 0 Empresa, 1 Linha, 3 Sentido, 6 Atividade, 14 Programado
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
     
+    # CORREÇÃO DO ATTRIBUTE ERROR: usando .str.lower() e .str.strip()
     df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
-    df["sentido"] = df["sentido"].astype(str).lower().str.strip()
-    df["atividade"] = df["atividade"].astype(str).lower().str.strip()
+    df["sentido"] = df["sentido"].astype(str).str.lower().str.strip()
+    df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
     df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], dayfirst=True, errors="coerce")
     
-    # Mapa de herança de empresa
     mapa_empresas = df[df["empresa"].notna() & (df["empresa"] != "")].groupby("linha_limpa")["empresa"].first().to_dict()
 
     nao_realizadas = df[df["atividade"] == "não realizada"].copy()
@@ -133,7 +132,7 @@ tab1, tab2, tab3 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA", "🔄 LINHA 2 (MI
 
 def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=False):
     if df_falhas is None or df_falhas.empty:
-        st.info("Aguardando upload...")
+        st.info("Aguardando arquivos...")
         return
 
     df_temp = df_falhas.copy()
@@ -149,6 +148,7 @@ def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=Fa
         st.success("✅ Tudo em ordem.")
         return
 
+    # ORDENAÇÃO: Números primeiro, Letras depois
     linhas_ord = custom_sort_lines(df_exibir["linha_str"].unique())
 
     for linha in linhas_ord:
@@ -163,17 +163,18 @@ def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=Fa
             cor = "pc1-box" if num_term == "1" else "pc2-box"
             st.markdown(f'<div class="{cor}">PC{num_term} ({str(row["sentido"]).capitalize()})</div>', unsafe_allow_html=True)
 
+            # VALIDAÇÃO AUTOMÁTICA DO E-CITOP
             confirmado_auto = False
             if df_ecitop is not None:
-                # Filtro por Linha e Terminal
+                # Filtrar pela linha e terminal (1 ou 2)
                 match = df_ecitop[(df_ecitop["linha_limpa"] == linha) & (df_ecitop["num_terminal"] == num_term)]
                 
-                # Tolerância de 20 minutos (independente de segundos/milissegundos)
+                # Tolerância de 20 minutos (compara data e hora juntas)
                 match_time = match[abs(match["saida_real"] - h_prog) <= timedelta(minutes=20)]
                 
                 if not match_time.empty:
                     res = match_time.iloc[0]
-                    st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída Real: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
                     confirmado_auto = True
 
             if not confirmado_auto:
@@ -181,7 +182,7 @@ def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=Fa
                 if id_v in st.session_state.validacoes:
                     st.success("Validado Manualmente")
                 else:
-                    st.button("Confirmar Manual no e-CITOP", key=id_v, on_click=lambda i=id_v: st.session_state.validacoes.update({i:True}))
+                    st.button("Confirmar Manual", key=id_v, on_click=lambda i=id_v: st.session_state.validacoes.update({i:True}))
         st.markdown("---")
 
 with tab1: exibir(df_base_total, df_citop_total, "SAO JOAO", "sj")
