@@ -44,7 +44,6 @@ def carregar_ecitop(file):
         except:
             df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
         
-        # Colunas e-CITOP: B(1) Operadora, E(4) Linha, G(6) Terminal, H(7) Viagem, AA(26) Saída
         df = df.iloc[:, [1, 4, 6, 7, 26]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida_real"]
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
@@ -79,7 +78,6 @@ def processar_bases_unificadas(uploaded_files):
     df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], errors="coerce")
     df = df[df["sentido"] != "ocioso"]
 
-    # Mapa para descobrir empresa de linhas não realizadas (exceto linha 2)
     mapa_empresas = df[df["empresa"].notna() & (df["empresa"] != "")].groupby("linha_limpa")["empresa"].first().to_dict()
 
     nao_realizadas = df[df["atividade"] == "não realizada"].copy()
@@ -89,18 +87,30 @@ def processar_bases_unificadas(uploaded_files):
     for (linha, sentido), grupo_nr in nao_realizadas.groupby(["linha_limpa", "sentido"]):
         grupo_ref = reforcos[(reforcos["linha_limpa"] == linha) & (reforcos["sentido"] == sentido)].sort_values("inicio_prog")
         grupo_ref["usado"] = False
-        for _, nr in grupo_nr.sort_values("inicio_prog").iterrows():
+        
+        for idx, nr in grupo_nr.sort_values("inicio_prog").iterrows():
             cands = grupo_ref[(~grupo_ref["usado"]) & (abs(grupo_ref["inicio_prog"] - nr["inicio_prog"]) <= timedelta(minutes=15))]
             if cands.empty:
                 if (pd.isna(nr["empresa"]) or nr["empresa"] == "") and linha != "2":
                     nr["empresa"] = mapa_empresas.get(linha, "DESCONHECIDA")
-                falhas.append(nr)
+                
+                nr_dict = nr.to_dict()
+                nr_dict['id_original'] = idx
+                falhas.append(nr_dict)
             else:
                 grupo_ref.loc[cands.index[0], "usado"] = True
-    return pd.DataFrame(falhas)
+    
+    df_falhas = pd.DataFrame(falhas)
+    
+    # --- LOGICA SOLICITADA: REMOVER DUPLICATAS ---
+    # Se houver duas falhas na mesma linha, sentido e horário, mantém apenas uma.
+    if not df_falhas.empty:
+        df_falhas = df_falhas.drop_duplicates(subset=["linha_limpa", "sentido", "inicio_prog"])
+        
+    return df_falhas
 
 # ==================================================
-# INTERFACE E ORDENAÇÃO
+# INTERFACE E EXIBIÇÃO
 # ==================================================
 df_base_total = processar_bases_unificadas(files_base)
 df_citop_total = carregar_ecitop(file_ecitop)
@@ -115,7 +125,6 @@ def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=Fa
         st.info("Aguardando upload das bases...")
         return
 
-    # Lógica de Filtragem
     if filtro_linha_2:
         df_exibir = df_falhas[df_falhas["linha_limpa"] == "2"]
     else:
@@ -140,7 +149,6 @@ def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=Fa
             cor = "pc1-box" if num_term == "1" else "pc2-box"
             st.markdown(f'<div class="{cor}">PC{num_term} ({str(row["sentido"]).capitalize()})</div>', unsafe_allow_html=True)
 
-            # Cruzamento e-CITOP
             confirmado_auto = False
             if df_ecitop is not None:
                 match = df_ecitop[(df_ecitop["linha_limpa"] == linha) & (df_ecitop["num_terminal"].astype(str) == num_term)]
@@ -151,11 +159,8 @@ def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=Fa
                     st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
                     confirmado_auto = True
 
-            # Botão Manual (Aqui adicionamos o prefixo da aba para evitar o erro de Duplicate Key)
             if not confirmado_auto:
-                # O ID agora contém o prefixo da aba (sj, rosa ou l2)
-                id_v = f"v_{prefixo_aba}_{linha}_{h_prog.strftime('%H%M')}_{num_term}"
-                
+                id_v = f"btn_{prefixo_aba}_{row['id_original']}_{linha}_{h_prog.strftime('%H%M')}"
                 if id_v in st.session_state.validacoes:
                     st.success("Validado Manualmente")
                 else:
