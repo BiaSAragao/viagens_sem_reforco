@@ -40,36 +40,60 @@ def custom_sort_lines(linhas):
     return sorted(nums, key=int) + sorted(alfas)
 
 # ==================================================
-# CARREGAR E-CITOP
+# CARREGAR e-CITOP (TXT / CSV)
 # ==================================================
 def carregar_ecitop(file):
     if not file:
         return None
     try:
-        df = pd.read_csv(file, sep=";", encoding="latin-1", engine="python")
+        df = pd.read_csv(
+            file,
+            sep=";",
+            encoding="latin-1",
+            engine="python"
+        )
 
-        colunas = {
-            "Nome Operadora": "operadora",
-            "Código Externo Linha": "linha",
-            "Num Terminal": "terminal",
-            "Viagem": "viagem_tipo",
-            "Data Hora Saída Terminal": "saida_real"
-        }
+        # Normalizar cabeçalho
+        df.columns = (
+            df.columns.astype(str)
+            .str.lower()
+            .str.strip()
+            .str.replace("á","a").str.replace("à","a").str.replace("ã","a").str.replace("â","a")
+            .str.replace("é","e").str.replace("ê","e")
+            .str.replace("í","i")
+            .str.replace("ó","o").str.replace("ô","o").str.replace("õ","o")
+            .str.replace("ú","u")
+            .str.replace("/", " ")
+        )
 
-        df = df[list(colunas.keys())].copy()
-        df.columns = list(colunas.values())
+        def achar_coluna(*palavras):
+            for c in df.columns:
+                if all(p in c for p in palavras):
+                    return c
+            return None
+
+        col_linha     = achar_coluna("linha")
+        col_terminal  = achar_coluna("terminal")
+        col_saida     = achar_coluna("saida")
+        col_operadora = achar_coluna("operadora")
+        col_viagem    = achar_coluna("viagem")
+
+        if not all([col_linha, col_terminal, col_saida, col_operadora, col_viagem]):
+            st.error("Layout do e-CITOP não reconhecido.")
+            st.write(df.columns.tolist())
+            return None
+
+        df = df[[col_operadora, col_linha, col_terminal, col_viagem, col_saida]].copy()
+        df.columns = ["operadora", "linha", "terminal", "viagem_tipo", "saida_real"]
 
         df["linha_limpa"] = (
-            df["linha"]
-            .astype(str)
+            df["linha"].astype(str)
             .str.replace("\u00a0", "", regex=False)
-            .str.strip()
-            .str.lstrip("0")
+            .str.strip().str.lstrip("0")
         )
 
         df["terminal"] = (
-            df["terminal"]
-            .astype(str)
+            df["terminal"].astype(str)
             .str.replace(".0", "", regex=False)
             .str.strip()
         )
@@ -77,7 +101,7 @@ def carregar_ecitop(file):
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors="coerce")
 
         df = df[
-            (df["viagem_tipo"].astype(str).str.contains("Nor", na=False)) &
+            (df["viagem_tipo"].astype(str).str.contains("nor", na=False)) &
             (df["terminal"].isin(["1", "2"]))
         ]
 
@@ -88,7 +112,7 @@ def carregar_ecitop(file):
         return None
 
 # ==================================================
-# PROCESSAR BASES (APENAS NÃO REALIZADAS SEM REFORÇO)
+# PROCESSAR BASES (NÃO REALIZADAS SEM REFORÇO)
 # ==================================================
 def processar_bases(files):
     if not files:
@@ -112,23 +136,21 @@ def processar_bases(files):
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
 
-    df["empresa"] = df["empresa"].astype(str)
     df["linha_limpa"] = (
-        df["linha"]
-        .astype(str)
+        df["linha"].astype(str)
         .str.replace("\u00a0", "", regex=False)
-        .str.strip()
-        .str.lstrip("0")
+        .str.strip().str.lstrip("0")
     )
+    df["empresa"] = df["empresa"].astype(str)
     df["sentido"] = df["sentido"].astype(str).str.lower().str.strip()
     df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
     df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], dayfirst=True, errors="coerce")
 
     df = df.dropna(subset=["inicio_prog"])
 
-    nao = df[df["atividade"] == "não realizada"].copy()
-    reforco = df[df["atividade"] == "reforço"].copy()
-    realizadas = df[df["atividade"] != "não realizada"].copy()
+    nao = df[df["atividade"] == "não realizada"]
+    reforco = df[df["atividade"] == "reforço"]
+    realizadas = df[df["atividade"] != "não realizada"]
 
     falhas = []
 
@@ -148,9 +170,8 @@ def processar_bases(files):
 
             if not cands.empty:
                 usados.add(cands.index[0])
-                continue  # ❗ TEM REFORÇO → IGNORA
+                continue  # TEM REFORÇO → IGNORA
 
-            # 🔎 Inferir operadora por viagem realizada da mesma linha
             cand_op = realizadas[realizadas["linha_limpa"] == linha].copy()
             operadora_inf = "DESCONHECIDA"
 
@@ -173,7 +194,7 @@ files_base = st.sidebar.file_uploader(
     "Planilhas Base", type=["csv", "xlsx"], accept_multiple_files=True
 )
 file_ecitop = st.sidebar.file_uploader(
-    "Relatório e-CITOP (CSV)", type=["csv"]
+    "Relatório e-CITOP (TXT ou CSV)", type=["txt", "csv"]
 )
 
 if st.sidebar.button("🗑️ Limpar Validações"):
@@ -194,16 +215,13 @@ def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
         return
 
     df_view = df_base.copy()
-
     if linha2:
         df_view = df_view[df_view["linha_limpa"] == "2"]
     else:
-        df_view = df_view[
-            df_view["empresa"].str.contains(filtro_empresa, case=False, na=False)
-        ]
+        df_view = df_view[df_view["empresa"].str.contains(filtro_empresa, case=False, na=False)]
 
     if df_view.empty:
-        st.success("✅ Nenhuma falha encontrada para este grupo.")
+        st.success("✅ Nenhuma falha encontrada.")
         return
 
     for linha in custom_sort_lines(df_view["linha_limpa"].unique()):
@@ -211,13 +229,13 @@ def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
         df_l = df_view[df_view["linha_limpa"] == linha].sort_values("inicio_prog")
 
         for _, r in df_l.iterrows():
-            h_prog = r["inicio_prog"]
-            terminal_alvo = "1" if r["sentido"] == "ida" else "2"
-            css = "pc1-box" if terminal_alvo == "1" else "pc2-box"
+            h = r["inicio_prog"]
+            terminal = "1" if r["sentido"] == "ida" else "2"
+            css = "pc1-box" if terminal == "1" else "pc2-box"
 
-            st.markdown(f"**🕒 {h_prog.strftime('%H:%M')}**")
+            st.markdown(f"**🕒 {h.strftime('%H:%M')}**")
             st.markdown(
-                f'<div class="{css}">PC{terminal_alvo} ({r["sentido"].capitalize()})</div>',
+                f'<div class="{css}">PC{terminal} ({r["sentido"].capitalize()})</div>',
                 unsafe_allow_html=True
             )
             st.caption(f"🏢 Operadora inferida: {r['empresa']}")
@@ -225,21 +243,20 @@ def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
             confirmado = False
 
             if df_ecitop is not None:
-                match = df_ecitop[
+                m = df_ecitop[
                     (df_ecitop["linha_limpa"] == linha) &
-                    (df_ecitop["terminal"] == terminal_alvo)
+                    (df_ecitop["terminal"] == terminal)
                 ]
 
-                if not match.empty:
-                    match = match.assign(diff=abs(match["saida_real"] - h_prog))
-                    match_ok = match[match["diff"] <= timedelta(minutes=30)]
+                if not m.empty:
+                    m = m.assign(diff=abs(m["saida_real"] - h))
+                    ok = m[m["diff"] <= timedelta(minutes=30)]
 
-                    if not match_ok.empty:
-                        m = match_ok.sort_values("diff").iloc[0]
+                    if not ok.empty:
+                        v = ok.sort_values("diff").iloc[0]
                         st.markdown(
                             f'<div class="auto-check">✅ Confirmado no e-CITOP | '
-                            f'{m["operadora"]} | '
-                            f'Saída: {m["saida_real"].strftime("%H:%M:%S")}</div>',
+                            f'{v["operadora"]} | Saída: {v["saida_real"].strftime("%H:%M:%S")}</div>',
                             unsafe_allow_html=True
                         )
                         confirmado = True
@@ -249,19 +266,13 @@ def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
                 if key in st.session_state.validacoes:
                     st.success("Validado Manualmente")
                 else:
-                    st.button(
-                        "Confirmar Manual",
-                        key=key,
-                        on_click=lambda k=key: st.session_state.validacoes.update({k: True})
-                    )
-
+                    st.button("Confirmar Manual", key=key,
+                              on_click=lambda k=key: st.session_state.validacoes.update({k: True}))
         st.markdown("---")
 
 with tab1:
     exibir(df_base, df_ecitop, "JOAO")
-
 with tab2:
     exibir(df_base, df_ecitop, "ROSA")
-
 with tab3:
     exibir(df_base, df_ecitop, "", linha2=True)
