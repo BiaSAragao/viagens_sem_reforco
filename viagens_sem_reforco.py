@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import timedelta
+import re
 
 # ==================================================
 # CONFIGURAÇÃO DA PÁGINA
@@ -18,7 +19,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🚌 Monitor Unificado de Viagens (Lógica de Linhas Compartilhadas)")
+st.title("🚌 Monitor Unificado de Viagens")
 
 # ==================================================
 # BARRA LATERAL
@@ -43,6 +44,7 @@ def carregar_ecitop(file):
         except:
             df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
         
+        # Colunas e-CITOP: B(1) Operadora, E(4) Linha, G(6) Terminal, H(7) Viagem, AA(26) Saída
         df = df.iloc[:, [1, 4, 6, 7, 26]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida_real"]
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
@@ -68,7 +70,6 @@ def processar_bases_unificadas(uploaded_files):
     
     if not dfs: return None
     df = pd.concat(dfs, ignore_index=True)
-    
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
     
@@ -78,6 +79,7 @@ def processar_bases_unificadas(uploaded_files):
     df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], errors="coerce")
     df = df[df["sentido"] != "ocioso"]
 
+    # Mapa para descobrir empresa de linhas não realizadas (exceto linha 2)
     mapa_empresas = df[df["empresa"].notna() & (df["empresa"] != "")].groupby("linha_limpa")["empresa"].first().to_dict()
 
     nao_realizadas = df[df["atividade"] == "não realizada"].copy()
@@ -98,33 +100,30 @@ def processar_bases_unificadas(uploaded_files):
     return pd.DataFrame(falhas)
 
 # ==================================================
-# INTERFACE
+# INTERFACE E ORDENAÇÃO
 # ==================================================
 df_base_total = processar_bases_unificadas(files_base)
 df_citop_total = carregar_ecitop(file_ecitop)
 
 tab1, tab2, tab3 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA", "🔄 LINHA 2 (MISTA)"])
 
-def exibir(df_falhas, df_ecitop, termo_operadora, filtro_linha_2=False):
+def natural_sort_key(s):
+    return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', str(s))]
+
+def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=False):
     if df_falhas is None or df_falhas.empty:
         st.info("Aguardando upload das bases...")
         return
 
+    # Lógica de Filtragem
     if filtro_linha_2:
         df_exibir = df_falhas[df_falhas["linha_limpa"] == "2"]
     else:
-        # Garante que a coluna empresa seja string para o filtro funcionar
         df_exibir = df_falhas[(df_falhas["linha_limpa"] != "2") & (df_falhas["empresa"].astype(str).str.upper().str.contains(termo_operadora, na=False))]
 
     if df_exibir.empty:
-        st.success("✅ Tudo em ordem para esta categoria.")
+        st.success("✅ Tudo em ordem.")
         return
-
-    # CORREÇÃO DO ERRO DE ORDENAÇÃO: 
-    # Criamos uma chave que lida com números e textos (como BRT2) sem quebrar
-    def natural_sort_key(s):
-        import re
-        return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', str(s))]
 
     linhas_ord = sorted(df_exibir["linha_limpa"].unique(), key=natural_sort_key)
 
@@ -134,15 +133,15 @@ def exibir(df_falhas, df_ecitop, termo_operadora, filtro_linha_2=False):
         
         for _, row in df_l.iterrows():
             h_prog = row["inicio_prog"]
-            # Previne erro se a hora for inválida
             if pd.isna(h_prog): continue
             
             num_term = "1" if "ida" in str(row["sentido"]).lower() else "2"
-            
             st.markdown(f"**🕒 {h_prog.strftime('%H:%M')}**")
             cor = "pc1-box" if num_term == "1" else "pc2-box"
             st.markdown(f'<div class="{cor}">PC{num_term} ({str(row["sentido"]).capitalize()})</div>', unsafe_allow_html=True)
 
+            # Cruzamento e-CITOP
+            confirmado_auto = False
             if df_ecitop is not None:
                 match = df_ecitop[(df_ecitop["linha_limpa"] == linha) & (df_ecitop["num_terminal"].astype(str) == num_term)]
                 match_time = match[abs(match["saida_real"] - h_prog) <= timedelta(minutes=15)]
@@ -150,14 +149,19 @@ def exibir(df_falhas, df_ecitop, termo_operadora, filtro_linha_2=False):
                 if not match_time.empty:
                     res = match_time.iloc[0]
                     st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+                    confirmado_auto = True
+
+            # Botão Manual (Aqui adicionamos o prefixo da aba para evitar o erro de Duplicate Key)
+            if not confirmado_auto:
+                # O ID agora contém o prefixo da aba (sj, rosa ou l2)
+                id_v = f"v_{prefixo_aba}_{linha}_{h_prog.strftime('%H%M')}_{num_term}"
+                
+                if id_v in st.session_state.validacoes:
+                    st.success("Validado Manualmente")
                 else:
-                    id_v = f"v_{linha}_{h_prog.strftime('%H%M')}_{num_term}"
-                    if id_v in st.session_state.validacoes:
-                        st.success("Validado Manualmente")
-                    else:
-                        st.button("Confirmar Manual no e-CITOP", key=id_v, on_click=lambda i=id_v: st.session_state.validacoes.update({i:True}))
+                    st.button("Confirmar Manual no e-CITOP", key=id_v, on_click=lambda i=id_v: st.session_state.validacoes.update({i:True}))
         st.markdown("---")
 
-with tab1: exibir(df_base_total, df_citop_total, "SAO JOAO")
-with tab2: exibir(df_base_total, df_citop_total, "ROSA")
-with tab3: exibir(df_base_total, df_citop_total, "", filtro_linha_2=True)
+with tab1: exibir(df_base_total, df_citop_total, "SAO JOAO", "sj")
+with tab2: exibir(df_base_total, df_citop_total, "ROSA", "rosa")
+with tab3: exibir(df_base_total, df_citop_total, "", "l2", filtro_linha_2=True)
