@@ -7,7 +7,7 @@ import uuid
 # CONFIGURAÇÃO DA PÁGINA
 # ==================================================
 st.set_page_config(
-    page_title="Monitor Unificado: Base vs e-CITOP",
+    page_title="Monitor Unificado: Base x e-CITOP",
     page_icon="🚌",
     layout="wide"
 )
@@ -40,7 +40,7 @@ def custom_sort_lines(linhas):
     return sorted(nums, key=int) + sorted(alfas)
 
 # ==================================================
-# CARREGAR e-CITOP (TXT / CSV)
+# CARREGAR e-CITOP (TXT / CSV) — LAYOUT REAL
 # ==================================================
 def carregar_ecitop(file):
     if not file:
@@ -53,55 +53,43 @@ def carregar_ecitop(file):
             engine="python"
         )
 
-        # Normalizar cabeçalho
-        df.columns = (
-            df.columns.astype(str)
-            .str.lower()
-            .str.strip()
-            .str.replace("á","a").str.replace("à","a").str.replace("ã","a").str.replace("â","a")
-            .str.replace("é","e").str.replace("ê","e")
-            .str.replace("í","i")
-            .str.replace("ó","o").str.replace("ô","o").str.replace("õ","o")
-            .str.replace("ú","u")
-            .str.replace("/", " ")
-        )
+        # Índices REAIS do layout do e-CITOP
+        df = df.iloc[:, [
+            1,   # Nome Operadora
+            4,   # Código Externo Linha
+            26,  # Data Hora Saída Terminal
+            39,  # Terminal (PC)
+            25   # Tipo Viagem
+        ]].copy()
 
-        def achar_coluna(*palavras):
-            for c in df.columns:
-                if all(p in c for p in palavras):
-                    return c
-            return None
+        df.columns = [
+            "operadora",
+            "linha",
+            "saida_real",
+            "terminal",
+            "tipo_viagem"
+        ]
 
-        col_linha     = achar_coluna("linha")
-        col_terminal  = achar_coluna("terminal")
-        col_saida     = achar_coluna("saida")
-        col_operadora = achar_coluna("operadora")
-        col_viagem    = achar_coluna("viagem")
-
-        if not all([col_linha, col_terminal, col_saida, col_operadora, col_viagem]):
-            st.error("Layout do e-CITOP não reconhecido.")
-            st.write(df.columns.tolist())
-            return None
-
-        df = df[[col_operadora, col_linha, col_terminal, col_viagem, col_saida]].copy()
-        df.columns = ["operadora", "linha", "terminal", "viagem_tipo", "saida_real"]
-
+        # Normalizações
         df["linha_limpa"] = (
-            df["linha"].astype(str)
-            .str.replace("\u00a0", "", regex=False)
-            .str.strip().str.lstrip("0")
+            df["linha"]
+            .astype(str)
+            .str.strip()
+            .str.lstrip("0")
         )
 
         df["terminal"] = (
-            df["terminal"].astype(str)
+            df["terminal"]
+            .astype(str)
             .str.replace(".0", "", regex=False)
             .str.strip()
         )
 
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors="coerce")
 
+        # Filtro correto: viagens comerciais (não ociosas) e PCs válidos
         df = df[
-            (df["viagem_tipo"].astype(str).str.contains("nor", na=False)) &
+            (~df["tipo_viagem"].astype(str).str.contains("oci", case=False, na=False)) &
             (df["terminal"].isin(["1", "2"]))
         ]
 
@@ -112,7 +100,7 @@ def carregar_ecitop(file):
         return None
 
 # ==================================================
-# PROCESSAR BASES (NÃO REALIZADAS SEM REFORÇO)
+# PROCESSAR BASES — SOMENTE NÃO REALIZADAS SEM REFORÇO
 # ==================================================
 def processar_bases(files):
     if not files:
@@ -133,14 +121,17 @@ def processar_bases(files):
 
     df = pd.concat(dfs, ignore_index=True)
 
+    # Colunas fixas da base
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
 
     df["linha_limpa"] = (
-        df["linha"].astype(str)
-        .str.replace("\u00a0", "", regex=False)
-        .str.strip().str.lstrip("0")
+        df["linha"]
+        .astype(str)
+        .str.strip()
+        .str.lstrip("0")
     )
+
     df["empresa"] = df["empresa"].astype(str)
     df["sentido"] = df["sentido"].astype(str).str.lower().str.strip()
     df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
@@ -170,17 +161,17 @@ def processar_bases(files):
 
             if not cands.empty:
                 usados.add(cands.index[0])
-                continue  # TEM REFORÇO → IGNORA
+                continue  # tem reforço → ignora
 
-            cand_op = realizadas[realizadas["linha_limpa"] == linha].copy()
-            operadora_inf = "DESCONHECIDA"
-
-            if not cand_op.empty:
-                cand_op["diff"] = abs(cand_op["inicio_prog"] - nr["inicio_prog"])
-                operadora_inf = cand_op.sort_values("diff").iloc[0]["empresa"]
+            # Inferir operadora por viagem realizada da mesma linha
+            op = "DESCONHECIDA"
+            cand = realizadas[realizadas["linha_limpa"] == linha].copy()
+            if not cand.empty:
+                cand["diff"] = abs(cand["inicio_prog"] - nr["inicio_prog"])
+                op = cand.sort_values("diff").iloc[0]["empresa"]
 
             falha = nr.to_dict()
-            falha["empresa"] = operadora_inf
+            falha["empresa"] = op
             falha["uid"] = str(uuid.uuid4())
             falhas.append(falha)
 
@@ -266,8 +257,11 @@ def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
                 if key in st.session_state.validacoes:
                     st.success("Validado Manualmente")
                 else:
-                    st.button("Confirmar Manual", key=key,
-                              on_click=lambda k=key: st.session_state.validacoes.update({k: True}))
+                    st.button(
+                        "Confirmar Manual",
+                        key=key,
+                        on_click=lambda k=key: st.session_state.validacoes.update({k: True})
+                    )
         st.markdown("---")
 
 with tab1:
