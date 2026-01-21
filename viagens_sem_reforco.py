@@ -15,50 +15,51 @@ st.markdown("""
     <style>
     .pc1-box { padding: 8px; border-radius: 5px; background-color: #FFA500; color: white; font-weight: bold; display: inline-block; width: 250px; }
     .pc2-box { padding: 8px; border-radius: 5px; background-color: #1E90FF; color: white; font-weight: bold; display: inline-block; width: 250px; }
-    .auto-check { border-left: 4px solid #2E7D32; background-color: #e8f5e9; padding: 10px; margin: 5px 0; border-radius: 5px; color: #2E7D32; font-weight: bold; }
+    .auto-check { border-left: 4px solid #2E7D32; background-color: #e8f5e9; padding: 10px; margin: 5px 0; border-radius: 5px; color: #2E7D32; font-weight: bold; border: 1px solid #2E7D32; }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("🚌 Monitor Unificado de Viagens")
 
 # ==================================================
-# FUNÇÕES DE APOIO
+# FUNÇÕES DE APOIO (ORDENAÇÃO)
 # ==================================================
 
 def custom_sort_lines(lista_linhas):
-    """Ordena números primeiro, alfanuméricos depois."""
     numericas = []
     alfanumericas = []
-    
     for l in lista_linhas:
-        if str(l).isdigit():
-            numericas.append(l)
+        l_str = str(l).strip()
+        if l_str.isdigit():
+            numericas.append(l_str)
         else:
-            alfanumericas.append(l)
-    
+            alfanumericas.append(l_str)
+    # Números em ordem crescente + Alfanuméricos por último
     return sorted(numericas, key=int) + sorted(alfanumericas)
 
 # ==================================================
-# PROCESSAMENTO DE DADOS
+# PROCESSAMENTO DOS ARQUIVOS
 # ==================================================
 
 def carregar_ecitop(file):
     if file is None: return None
     try:
-        try:
-            df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
-        except:
-            df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
+        # Lendo colunas fixas do e-CITOP
+        df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
         
-        # Colunas: Operadora(1), Linha(4), Terminal(6), Viagem(7), Saída(26)
+        # B(1) Operadora, E(4) Linha, G(6) Terminal, H(7) Viagem, AA(26) Saída
         df = df.iloc[:, [1, 4, 6, 7, 26]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida_real"]
+        
+        # Filtra ociosos
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
         
-        # Converte para datetime e remove milissegundos para facilitar comparação
+        # Conversão robusta para o formato: 2026-01-12 05:41:18.0
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors='coerce')
+        
         df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
         df["num_terminal"] = df["num_terminal"].astype(str).str.strip()
+        
         return df.dropna(subset=["saida_real"])
     except Exception as e:
         st.error(f"Erro no e-CITOP: {e}")
@@ -71,21 +72,23 @@ def processar_bases_unificadas(uploaded_files):
         try:
             if f.name.lower().endswith(".xlsx"): temp_df = pd.read_excel(f)
             else:
-                try: temp_df = pd.read_csv(f, sep=";", encoding="cp1252", engine="python")
-                except: temp_df = pd.read_csv(f, sep=";", encoding="utf-8", engine="python")
+                temp_df = pd.read_csv(f, sep=";", encoding="cp1252", engine="python")
             dfs.append(temp_df)
         except: continue
     
     if not dfs: return None
     df = pd.concat(dfs, ignore_index=True)
+    
+    # Colunas Base: 0 Empresa, 1 Linha, 3 Sentido, 6 Atividade, 14 Programado
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
     
     df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
-    df["sentido"] = df["sentido"].astype(str).str.lower().str.strip()
-    df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
+    df["sentido"] = df["sentido"].astype(str).lower().str.strip()
+    df["atividade"] = df["atividade"].astype(str).lower().str.strip()
     df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], dayfirst=True, errors="coerce")
     
+    # Mapa de herança de empresa
     mapa_empresas = df[df["empresa"].notna() & (df["empresa"] != "")].groupby("linha_limpa")["empresa"].first().to_dict()
 
     nao_realizadas = df[df["atividade"] == "não realizada"].copy()
@@ -101,24 +104,23 @@ def processar_bases_unificadas(uploaded_files):
             if cands.empty:
                 if (pd.isna(nr["empresa"]) or nr["empresa"] == "") and linha != "2":
                     nr["empresa"] = mapa_empresas.get(linha, "DESCONHECIDA")
-                
                 nr_dict = nr.to_dict()
                 nr_dict['id_original'] = idx
                 falhas.append(nr_dict)
             else:
                 grupo_ref.loc[cands.index[0], "usado"] = True
     
-    df_result = pd.DataFrame(falhas)
-    if not df_result.empty:
-        df_result = df_result.drop_duplicates(subset=["linha_limpa", "sentido", "inicio_prog"])
-    return df_result
+    df_res = pd.DataFrame(falhas)
+    if not df_res.empty:
+        df_res = df_res.drop_duplicates(subset=["linha_limpa", "sentido", "inicio_prog"])
+    return df_res
 
 # ==================================================
 # INTERFACE
 # ==================================================
 st.sidebar.header("📁 Upload de Arquivos")
 files_base = st.sidebar.file_uploader("Suba as Planilhas Base", type=["csv", "xlsx"], accept_multiple_files=True)
-file_ecitop = st.sidebar.file_uploader("Relatório e-CITOP (Mapa de Controle)", type=["csv", "xlsx"])
+file_ecitop = st.sidebar.file_uploader("Relatório e-CITOP", type=["csv", "xlsx"])
 
 if st.sidebar.button("🗑️ Limpar Memória"):
     st.session_state.validacoes = {}
@@ -147,9 +149,7 @@ def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=Fa
         st.success("✅ Tudo em ordem.")
         return
 
-    # ORDENAÇÃO: Números primeiro, letras depois
-    linhas_unicas = df_exibir["linha_str"].unique()
-    linhas_ord = custom_sort_lines(linhas_unicas)
+    linhas_ord = custom_sort_lines(df_exibir["linha_str"].unique())
 
     for linha in linhas_ord:
         st.markdown(f"### 🚍 Linha {linha}")
@@ -157,25 +157,23 @@ def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=Fa
         
         for _, row in df_l.iterrows():
             h_prog = row["inicio_prog"]
-            if pd.isna(h_prog): continue
-            
             num_term = "1" if "ida" in str(row["sentido"]).lower() else "2"
+            
             st.markdown(f"**🕒 {h_prog.strftime('%H:%M')}**")
             cor = "pc1-box" if num_term == "1" else "pc2-box"
             st.markdown(f'<div class="{cor}">PC{num_term} ({str(row["sentido"]).capitalize()})</div>', unsafe_allow_html=True)
 
             confirmado_auto = False
             if df_ecitop is not None:
-                # Filtragem rigorosa por Linha e Terminal
+                # Filtro por Linha e Terminal
                 match = df_ecitop[(df_ecitop["linha_limpa"] == linha) & (df_ecitop["num_terminal"] == num_term)]
                 
-                # COMPARAÇÃO DE HORÁRIO: Normalizamos ambos para "Hora:Minuto"
-                # Isso resolve problemas de segundos/milissegundos diferentes
+                # Tolerância de 20 minutos (independente de segundos/milissegundos)
                 match_time = match[abs(match["saida_real"] - h_prog) <= timedelta(minutes=20)]
                 
                 if not match_time.empty:
                     res = match_time.iloc[0]
-                    st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída Real: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
                     confirmado_auto = True
 
             if not confirmado_auto:
