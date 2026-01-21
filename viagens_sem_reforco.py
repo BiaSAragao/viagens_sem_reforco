@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
 from datetime import timedelta
-import re
+import uuid
 
 # ==================================================
-# CONFIGURAÇÃO DA PÁGINA
+# CONFIGURAÇÃO
 # ==================================================
 st.set_page_config(page_title="Monitor Unificado: Base vs e-CITOP", page_icon="🚌", layout="wide")
 
@@ -12,185 +12,213 @@ if "validacoes" not in st.session_state:
     st.session_state.validacoes = {}
 
 st.markdown("""
-    <style>
-    .pc1-box { padding: 8px; border-radius: 5px; background-color: #FFA500; color: white; font-weight: bold; display: inline-block; width: 250px; }
-    .pc2-box { padding: 8px; border-radius: 5px; background-color: #1E90FF; color: white; font-weight: bold; display: inline-block; width: 250px; }
-    .auto-check { border-left: 4px solid #2E7D32; background-color: #e8f5e9; padding: 10px; margin: 5px 0; border-radius: 5px; color: #2E7D32; font-weight: bold; border: 1px solid #2E7D32; }
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+.pc1-box { padding: 8px; border-radius: 5px; background-color: #FFA500; color: white; font-weight: bold; width: 220px; }
+.pc2-box { padding: 8px; border-radius: 5px; background-color: #1E90FF; color: white; font-weight: bold; width: 220px; }
+.auto-check { border-left: 5px solid #2E7D32; background-color: #e8f5e9; padding: 10px; margin: 6px 0;
+              border-radius: 5px; color: #2E7D32; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
 
 st.title("🚌 Monitor Unificado de Viagens")
 
 # ==================================================
-# FUNÇÕES DE APOIO (ORDENAÇÃO)
+# FUNÇÕES AUXILIARES
 # ==================================================
-
-def custom_sort_lines(lista_linhas):
-    # Separa quem é só número de quem tem letras
-    numericas = []
-    alfanumericas = []
-    for l in lista_linhas:
-        l_str = str(l).strip()
-        if l_str.isdigit():
-            numericas.append(l_str)
+def custom_sort_lines(linhas):
+    nums = []
+    alfas = []
+    for l in linhas:
+        s = str(l).strip()
+        if s.isdigit():
+            nums.append(s)
         else:
-            alfanumericas.append(l_str)
-    # Números em ordem crescente + Alfanuméricos por último
-    return sorted(numericas, key=int) + sorted(alfanumericas)
+            alfas.append(s)
+    return sorted(nums, key=int) + sorted(alfas)
 
 # ==================================================
-# PROCESSAMENTO DOS DADOS
+# e-CITOP
 # ==================================================
-
 def carregar_ecitop(file):
-    if file is None: return None
+    if not file:
+        return None
+
     try:
         try:
             df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
         except:
             df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
-        
-        # Colunas e-CITOP: B(1) Operadora, E(4) Linha, G(6) Terminal, H(7) Viagem, AA(26) Saída
+
         df = df.iloc[:, [1, 4, 6, 7, 26]]
-        df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida_real"]
-        
-        # Filtra ociosas pelo texto da viagem E pelo terminal 0
-        df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
-        df["num_terminal"] = df["num_terminal"].astype(str).str.strip()
-        df = df[df["num_terminal"] != "0"] # Descarta terminal 0 (ociosa)
-        
-        # Formato ISO: 2026-01-12 05:41:18.0
-        df["saida_real"] = pd.to_datetime(df["saida_real"], errors='coerce')
-        df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
-        
+        df.columns = ["operadora", "linha", "terminal", "viagem", "saida_real"]
+
+        df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip("0")
+        df["terminal"] = df["terminal"].astype(str).str.strip()
+
+        df = df[
+            (~df["viagem"].astype(str).str.contains("Oci.", na=False)) &
+            (df["terminal"].isin(["1", "2"]))
+        ]
+
+        df["saida_real"] = pd.to_datetime(df["saida_real"], errors="coerce")
+        df["operadora"] = df["operadora"].astype(str).str.upper()
+
         return df.dropna(subset=["saida_real"])
+
     except Exception as e:
-        st.error(f"Erro no e-CITOP: {e}")
+        st.error(f"Erro e-CITOP: {e}")
         return None
 
-def processar_bases_unificadas(uploaded_files):
-    if not uploaded_files: return None
+# ==================================================
+# BASE
+# ==================================================
+def processar_bases(files):
+    if not files:
+        return None
+
     dfs = []
-    for f in uploaded_files:
+    for f in files:
         try:
-            if f.name.lower().endswith(".xlsx"): temp_df = pd.read_excel(f)
+            if f.name.lower().endswith(".xlsx"):
+                dfs.append(pd.read_excel(f))
             else:
-                temp_df = pd.read_csv(f, sep=";", encoding="cp1252", engine="python")
-            dfs.append(temp_df)
-        except: continue
-    
-    if not dfs: return None
+                dfs.append(pd.read_csv(f, sep=";", encoding="cp1252", engine="python"))
+        except:
+            continue
+
+    if not dfs:
+        return None
+
     df = pd.concat(dfs, ignore_index=True)
-    
-    # Colunas Base fixa
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
-    
-    df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
+
+    df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip("0")
     df["sentido"] = df["sentido"].astype(str).str.lower().str.strip()
     df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
+    df["empresa"] = df["empresa"].astype(str).str.upper().str.strip()
     df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], dayfirst=True, errors="coerce")
-    
-    mapa_empresas = df[df["empresa"].notna() & (df["empresa"] != "")].groupby("linha_limpa")["empresa"].first().to_dict()
 
-    nao_realizadas = df[df["atividade"] == "não realizada"].copy()
-    reforcos = df[df["atividade"] == "reforço"].copy()
+    df = df.dropna(subset=["inicio_prog"])
+
+    nao = df[df["atividade"] == "não realizada"].copy()
+    ref = df[df["atividade"] == "reforço"].copy()
 
     falhas = []
-    for (linha, sentido), grupo_nr in nao_realizadas.groupby(["linha_limpa", "sentido"]):
-        grupo_ref = reforcos[(reforcos["linha_limpa"] == linha) & (reforcos["sentido"] == sentido)].sort_values("inicio_prog")
-        grupo_ref["usado"] = False
-        
-        for idx, nr in grupo_nr.sort_values("inicio_prog").iterrows():
-            cands = grupo_ref[(~grupo_ref["usado"]) & (abs(grupo_ref["inicio_prog"] - nr["inicio_prog"]) <= timedelta(minutes=15))]
-            if cands.empty:
-                if (pd.isna(nr["empresa"]) or nr["empresa"] == "") and linha != "2":
-                    nr["empresa"] = mapa_empresas.get(linha, "DESCONHECIDA")
-                nr_dict = nr.to_dict()
-                nr_dict['id_original'] = idx
-                falhas.append(nr_dict)
+
+    for (linha, sentido), grp in nao.groupby(["linha_limpa", "sentido"]):
+        ref_f = ref[(ref["linha_limpa"] == linha) & (ref["sentido"] == sentido)].sort_values("inicio_prog")
+        usados = set()
+
+        for idx, nr in grp.sort_values("inicio_prog").iterrows():
+            candidatos = ref_f[
+                (~ref_f.index.isin(usados)) &
+                (abs(ref_f["inicio_prog"] - nr["inicio_prog"]) <= timedelta(minutes=15))
+            ]
+
+            if candidatos.empty:
+                falha = nr.to_dict()
+                falha["uid"] = str(uuid.uuid4())
+                falhas.append(falha)
             else:
-                grupo_ref.loc[cands.index[0], "usado"] = True
-    
-    df_res = pd.DataFrame(falhas)
-    if not df_res.empty:
-        # REMOVE DUPLICADAS: Se tiver duas viagens iguais no mesmo horário, sentido e linha, ignora a segunda
-        df_res = df_res.drop_duplicates(subset=["linha_limpa", "sentido", "inicio_prog"])
-    return df_res
+                usados.add(candidatos.index[0])
+
+    df_f = pd.DataFrame(falhas)
+
+    if not df_f.empty:
+        df_f = df_f.drop_duplicates(subset=["linha_limpa", "sentido", "inicio_prog"])
+
+    return df_f
 
 # ==================================================
 # INTERFACE
 # ==================================================
-st.sidebar.header("📁 Upload de Arquivos")
-files_base = st.sidebar.file_uploader("Suba as Planilhas Base", type=["csv", "xlsx"], accept_multiple_files=True)
+st.sidebar.header("📁 Upload")
+files_base = st.sidebar.file_uploader("Planilhas Base", type=["csv", "xlsx"], accept_multiple_files=True)
 file_ecitop = st.sidebar.file_uploader("Relatório e-CITOP", type=["csv", "xlsx"])
 
-if st.sidebar.button("🗑️ Limpar Memória"):
+if st.sidebar.button("🗑️ Limpar validações"):
     st.session_state.validacoes = {}
     st.rerun()
 
-df_base_total = processar_bases_unificadas(files_base)
-df_citop_total = carregar_ecitop(file_ecitop)
+df_base = processar_bases(files_base)
+df_ecitop = carregar_ecitop(file_ecitop)
 
 tab1, tab2, tab3 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA", "🔄 LINHA 2 (MISTA)"])
 
-def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=False):
-    if df_falhas is None or df_falhas.empty:
-        st.info("Aguardando upload...")
+# ==================================================
+# EXIBIÇÃO
+# ==================================================
+def exibir(df_base, df_ecitop, operadora, linha2=False):
+    if df_base is None or df_base.empty:
+        st.info("Aguardando arquivos…")
         return
 
-    df_temp = df_falhas.copy()
-    df_temp["empresa_str"] = df_temp["empresa"].astype(str).str.upper()
-    df_temp["linha_str"] = df_temp["linha_limpa"].astype(str)
+    df = df_base.copy()
 
-    if filtro_linha_2:
-        df_exibir = df_temp[df_temp["linha_str"] == "2"]
+    if linha2:
+        df = df[df["linha_limpa"] == "2"]
     else:
-        df_exibir = df_temp[(df_temp["linha_str"] != "2") & (df_temp["empresa_str"].str.contains(termo_operadora, na=False))]
+        df = df[(df["linha_limpa"] != "2") & (df["empresa"].str.contains(operadora))]
 
-    if df_exibir.empty:
-        st.success("✅ Tudo em ordem.")
+    if df.empty:
+        st.success("✅ Tudo em ordem")
         return
 
-    # ORDENAÇÃO: Números primeiro, Letras depois
-    linhas_ord = custom_sort_lines(df_exibir["linha_str"].unique())
-
-    for linha in linhas_ord:
+    for linha in custom_sort_lines(df["linha_limpa"].unique()):
         st.markdown(f"### 🚍 Linha {linha}")
-        df_l = df_exibir[df_exibir["linha_str"] == linha].sort_values("inicio_prog")
-        
-        for _, row in df_l.iterrows():
-            h_prog = row["inicio_prog"]
-            sentido_texto = str(row["sentido"]).lower()
-            
-            # PC1 = Ida, PC2 = Volta
-            num_pc = "1" if "ida" in sentido_texto else "2"
-            
-            st.markdown(f"**🕒 {h_prog.strftime('%H:%M')}**")
-            cor = "pc1-box" if num_pc == "1" else "pc2-box"
-            st.markdown(f'<div class="{cor}">PC{num_pc} ({sentido_texto.capitalize()})</div>', unsafe_allow_html=True)
+        df_l = df[df["linha_limpa"] == linha].sort_values("inicio_prog")
 
-            confirmado_auto = False
+        for _, r in df_l.iterrows():
+            sentido = r["sentido"]
+            h = r["inicio_prog"]
+
+            if sentido == "ida":
+                terminal = "1"
+                css = "pc1-box"
+            elif sentido == "volta":
+                terminal = "2"
+                css = "pc2-box"
+            else:
+                continue
+
+            st.markdown(f"**🕒 {h.strftime('%H:%M')}**")
+            st.markdown(f'<div class="{css}">PC{terminal} ({sentido.capitalize()})</div>', unsafe_allow_html=True)
+
+            confirmado = False
             if df_ecitop is not None:
-                # Compara Linha e Terminal (ignora 0)
-                match = df_ecitop[(df_ecitop["linha_limpa"] == linha) & (df_ecitop["num_terminal"] == num_pc)]
-                
-                # Tolerância de 20 minutos
-                match_time = match[abs(match["saida_real"] - h_prog) <= timedelta(minutes=20)]
-                
-                if not match_time.empty:
-                    res = match_time.iloc[0]
-                    st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída Real: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
-                    confirmado_auto = True
+                gps = df_ecitop[
+                    (df_ecitop["linha_limpa"] == linha) &
+                    (df_ecitop["terminal"] == terminal) &
+                    (df_ecitop["operadora"].str.contains(operadora))
+                ]
 
-            if not confirmado_auto:
-                id_v = f"btn_{prefixo_aba}_{row['id_original']}_{linha}_{h_prog.strftime('%H%M')}"
-                if id_v in st.session_state.validacoes:
+                gps = gps.assign(delta=abs(gps["saida_real"] - h))
+                gps = gps[gps["delta"] <= timedelta(minutes=20)]
+
+                if not gps.empty:
+                    g = gps.sort_values("delta").iloc[0]
+                    st.markdown(
+                        f'<div class="auto-check">✅ Confirmado no e-CITOP | '
+                        f'{g["operadora"]} | Saída Real: {g["saida_real"].strftime("%H:%M:%S")}</div>',
+                        unsafe_allow_html=True
+                    )
+                    confirmado = True
+
+            if not confirmado:
+                key = f"manual_{r['uid']}"
+                if key in st.session_state.validacoes:
                     st.success("Validado Manualmente")
                 else:
-                    st.button("Confirmar Manual", key=id_v, on_click=lambda i=id_v: st.session_state.validacoes.update({i:True}))
+                    st.button("Confirmar Manual", key=key,
+                              on_click=lambda k=key: st.session_state.validacoes.update({k: True}))
         st.markdown("---")
 
-with tab1: exibir(df_base_total, df_citop_total, "SAO JOAO", "sj")
-with tab2: exibir(df_base_total, df_citop_total, "ROSA", "rosa")
-with tab3: exibir(df_base_total, df_citop_total, "", "l2", filtro_linha_2=True)
+with tab1:
+    exibir(df_base, df_ecitop, "SAO JOAO")
+
+with tab2:
+    exibir(df_base, df_ecitop, "ROSA")
+
+with tab3:
+    exibir(df_base, df_ecitop, "", linha2=True)
