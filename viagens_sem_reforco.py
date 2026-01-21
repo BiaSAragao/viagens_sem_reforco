@@ -24,7 +24,7 @@ st.title("🚌 Monitor Unificado de Viagens (Lógica de Linhas Compartilhadas)")
 # BARRA LATERAL
 # ==================================================
 st.sidebar.header("📁 Upload de Arquivos")
-files_base = st.sidebar.file_uploader("Suba as Planilhas Base (pode ser mais de uma)", type=["csv", "xlsx"], accept_multiple_files=True)
+files_base = st.sidebar.file_uploader("Suba as Planilhas Base", type=["csv", "xlsx"], accept_multiple_files=True)
 file_ecitop = st.sidebar.file_uploader("Relatório e-CITOP (Mapa de Controle)", type=["csv", "xlsx"])
 
 if st.sidebar.button("🗑️ Limpar Memória"):
@@ -43,7 +43,6 @@ def carregar_ecitop(file):
         except:
             df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
         
-        # B(1) Operadora, E(4) Linha, G(6) Terminal, H(7) Viagem, AA(26) Saída
         df = df.iloc[:, [1, 4, 6, 7, 26]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida_real"]
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
@@ -70,7 +69,6 @@ def processar_bases_unificadas(uploaded_files):
     if not dfs: return None
     df = pd.concat(dfs, ignore_index=True)
     
-    # Colunas: 0 Empresa, 1 Linha, 3 Sentido, 6 Atividade, 14 Programado
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
     
@@ -80,8 +78,6 @@ def processar_bases_unificadas(uploaded_files):
     df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], errors="coerce")
     df = df[df["sentido"] != "ocioso"]
 
-    # --- LÓGICA DE HERANÇA DE EMPRESA ---
-    # Criamos um mapa de qual empresa opera qual linha baseado nas viagens que têm nome
     mapa_empresas = df[df["empresa"].notna() & (df["empresa"] != "")].groupby("linha_limpa")["empresa"].first().to_dict()
 
     nao_realizadas = df[df["atividade"] == "não realizada"].copy()
@@ -94,7 +90,6 @@ def processar_bases_unificadas(uploaded_files):
         for _, nr in grupo_nr.sort_values("inicio_prog").iterrows():
             cands = grupo_ref[(~grupo_ref["usado"]) & (abs(grupo_ref["inicio_prog"] - nr["inicio_prog"]) <= timedelta(minutes=15))]
             if cands.empty:
-                # Se a empresa está vazia, tenta recuperar do mapa (exceto para a linha 2 que é mista)
                 if (pd.isna(nr["empresa"]) or nr["empresa"] == "") and linha != "2":
                     nr["empresa"] = mapa_empresas.get(linha, "DESCONHECIDA")
                 falhas.append(nr)
@@ -112,20 +107,26 @@ tab1, tab2, tab3 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA", "🔄 LINHA 2 (MI
 
 def exibir(df_falhas, df_ecitop, termo_operadora, filtro_linha_2=False):
     if df_falhas is None or df_falhas.empty:
-        st.info("Nenhuma falha encontrada.")
+        st.info("Aguardando upload das bases...")
         return
 
-    # Filtro de exibição
     if filtro_linha_2:
         df_exibir = df_falhas[df_falhas["linha_limpa"] == "2"]
     else:
-        df_exibir = df_falhas[(df_falhas["linha_limpa"] != "2") & (df_falhas["empresa"].astype(str).str.contains(termo_operadora, na=False))]
+        # Garante que a coluna empresa seja string para o filtro funcionar
+        df_exibir = df_falhas[(df_falhas["linha_limpa"] != "2") & (df_falhas["empresa"].astype(str).str.upper().str.contains(termo_operadora, na=False))]
 
     if df_exibir.empty:
         st.success("✅ Tudo em ordem para esta categoria.")
         return
 
-    linhas_ord = sorted(df_exibir["linha_limpa"].unique(), key=lambda x: int(x) if x.isdigit() else x)
+    # CORREÇÃO DO ERRO DE ORDENAÇÃO: 
+    # Criamos uma chave que lida com números e textos (como BRT2) sem quebrar
+    def natural_sort_key(s):
+        import re
+        return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', str(s))]
+
+    linhas_ord = sorted(df_exibir["linha_limpa"].unique(), key=natural_sort_key)
 
     for linha in linhas_ord:
         st.markdown(f"### 🚍 Linha {linha}")
@@ -133,13 +134,15 @@ def exibir(df_falhas, df_ecitop, termo_operadora, filtro_linha_2=False):
         
         for _, row in df_l.iterrows():
             h_prog = row["inicio_prog"]
-            num_term = "1" if "ida" in row["sentido"] else "2"
+            # Previne erro se a hora for inválida
+            if pd.isna(h_prog): continue
+            
+            num_term = "1" if "ida" in str(row["sentido"]).lower() else "2"
             
             st.markdown(f"**🕒 {h_prog.strftime('%H:%M')}**")
             cor = "pc1-box" if num_term == "1" else "pc2-box"
-            st.markdown(f'<div class="{cor}">PC{num_term} ({row["sentido"].capitalize()})</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="{cor}">PC{num_term} ({str(row["sentido"]).capitalize()})</div>', unsafe_allow_html=True)
 
-            # Cruzamento no e-CITOP
             if df_ecitop is not None:
                 match = df_ecitop[(df_ecitop["linha_limpa"] == linha) & (df_ecitop["num_terminal"].astype(str) == num_term)]
                 match_time = match[abs(match["saida_real"] - h_prog) <= timedelta(minutes=15)]
