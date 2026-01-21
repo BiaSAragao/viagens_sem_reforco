@@ -22,11 +22,11 @@ st.markdown("""
 st.title("🚌 Monitor Unificado de Viagens")
 
 # ==================================================
-# FUNÇÕES DE APOIO
+# FUNÇÕES DE APOIO (ORDENAÇÃO)
 # ==================================================
 
 def custom_sort_lines(lista_linhas):
-    """Ordena números primeiro e strings com letras por último."""
+    # Separa quem é só número de quem tem letras
     numericas = []
     alfanumericas = []
     for l in lista_linhas:
@@ -35,6 +35,7 @@ def custom_sort_lines(lista_linhas):
             numericas.append(l_str)
         else:
             alfanumericas.append(l_str)
+    # Números em ordem crescente + Alfanuméricos por último
     return sorted(numericas, key=int) + sorted(alfanumericas)
 
 # ==================================================
@@ -49,16 +50,18 @@ def carregar_ecitop(file):
         except:
             df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
         
-        # Colunas fixas e-CITOP: B(1), E(4), G(6), H(7), AA(26)
+        # Colunas e-CITOP: B(1) Operadora, E(4) Linha, G(6) Terminal, H(7) Viagem, AA(26) Saída
         df = df.iloc[:, [1, 4, 6, 7, 26]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida_real"]
         
+        # Filtra ociosas pelo texto da viagem E pelo terminal 0
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
+        df["num_terminal"] = df["num_terminal"].astype(str).str.strip()
+        df = df[df["num_terminal"] != "0"] # Descarta terminal 0 (ociosa)
         
-        # Converte o formato 2026-01-12 05:41:18.0
+        # Formato ISO: 2026-01-12 05:41:18.0
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors='coerce')
         df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
-        df["num_terminal"] = df["num_terminal"].astype(str).str.strip()
         
         return df.dropna(subset=["saida_real"])
     except Exception as e:
@@ -72,17 +75,17 @@ def processar_bases_unificadas(uploaded_files):
         try:
             if f.name.lower().endswith(".xlsx"): temp_df = pd.read_excel(f)
             else:
-                try: temp_df = pd.read_csv(f, sep=";", encoding="cp1252", engine="python")
-                except: temp_df = pd.read_csv(f, sep=";", encoding="utf-8", engine="python")
+                temp_df = pd.read_csv(f, sep=";", encoding="cp1252", engine="python")
             dfs.append(temp_df)
         except: continue
     
     if not dfs: return None
     df = pd.concat(dfs, ignore_index=True)
+    
+    # Colunas Base fixa
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
     
-    # CORREÇÃO DO ATTRIBUTE ERROR: usando .str.lower() e .str.strip()
     df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
     df["sentido"] = df["sentido"].astype(str).str.lower().str.strip()
     df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
@@ -111,6 +114,7 @@ def processar_bases_unificadas(uploaded_files):
     
     df_res = pd.DataFrame(falhas)
     if not df_res.empty:
+        # REMOVE DUPLICADAS: Se tiver duas viagens iguais no mesmo horário, sentido e linha, ignora a segunda
         df_res = df_res.drop_duplicates(subset=["linha_limpa", "sentido", "inicio_prog"])
     return df_res
 
@@ -132,7 +136,7 @@ tab1, tab2, tab3 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA", "🔄 LINHA 2 (MI
 
 def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=False):
     if df_falhas is None or df_falhas.empty:
-        st.info("Aguardando arquivos...")
+        st.info("Aguardando upload...")
         return
 
     df_temp = df_falhas.copy()
@@ -157,24 +161,26 @@ def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=Fa
         
         for _, row in df_l.iterrows():
             h_prog = row["inicio_prog"]
-            num_term = "1" if "ida" in str(row["sentido"]).lower() else "2"
+            sentido_texto = str(row["sentido"]).lower()
+            
+            # PC1 = Ida, PC2 = Volta
+            num_pc = "1" if "ida" in sentido_texto else "2"
             
             st.markdown(f"**🕒 {h_prog.strftime('%H:%M')}**")
-            cor = "pc1-box" if num_term == "1" else "pc2-box"
-            st.markdown(f'<div class="{cor}">PC{num_term} ({str(row["sentido"]).capitalize()})</div>', unsafe_allow_html=True)
+            cor = "pc1-box" if num_pc == "1" else "pc2-box"
+            st.markdown(f'<div class="{cor}">PC{num_pc} ({sentido_texto.capitalize()})</div>', unsafe_allow_html=True)
 
-            # VALIDAÇÃO AUTOMÁTICA DO E-CITOP
             confirmado_auto = False
             if df_ecitop is not None:
-                # Filtrar pela linha e terminal (1 ou 2)
-                match = df_ecitop[(df_ecitop["linha_limpa"] == linha) & (df_ecitop["num_terminal"] == num_term)]
+                # Compara Linha e Terminal (ignora 0)
+                match = df_ecitop[(df_ecitop["linha_limpa"] == linha) & (df_ecitop["num_terminal"] == num_pc)]
                 
-                # Tolerância de 20 minutos (compara data e hora juntas)
+                # Tolerância de 20 minutos
                 match_time = match[abs(match["saida_real"] - h_prog) <= timedelta(minutes=20)]
                 
                 if not match_time.empty:
                     res = match_time.iloc[0]
-                    st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída Real: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
                     confirmado_auto = True
 
             if not confirmado_auto:
