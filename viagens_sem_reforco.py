@@ -7,19 +7,41 @@ import uuid
 # CONFIGURAÇÃO DA PÁGINA
 # ==================================================
 st.set_page_config(
-    page_title="Monitor Unificado: Base x e-CITOP",
+    page_title="Monitor Unificado: Base vs e-CITOP",
     page_icon="🚌",
     layout="wide"
 )
 
 st.markdown("""
 <style>
-.pc1-box { padding: 8px; border-radius: 5px; background-color: #FFA500; color: white; font-weight: bold; width: 220px; }
-.pc2-box { padding: 8px; border-radius: 5px; background-color: #1E90FF; color: white; font-weight: bold; width: 220px; }
-.auto-check { border-left: 5px solid #2E7D32; background-color: #e8f5e9; padding: 10px; margin: 6px 0;
-              border-radius: 5px; color: #2E7D32; font-weight: bold; border: 1px solid #2E7D32; }
-.auto-fail { border-left: 5px solid #C62828; background-color: #fdecea; padding: 10px; margin: 6px 0;
-             border-radius: 5px; color: #C62828; font-weight: bold; border: 1px solid #C62828; }
+.pc-box {
+    padding: 8px;
+    border-radius: 5px;
+    background-color: #1E88E5;
+    color: white;
+    font-weight: bold;
+    width: 220px;
+}
+.auto-check {
+    border-left: 5px solid #2E7D32;
+    background-color: #e8f5e9;
+    padding: 10px;
+    margin: 6px 0;
+    border-radius: 5px;
+    color: #2E7D32;
+    font-weight: bold;
+    border: 1px solid #2E7D32;
+}
+.auto-fail {
+    border-left: 5px solid #C62828;
+    background-color: #ffebee;
+    padding: 10px;
+    margin: 6px 0;
+    border-radius: 5px;
+    color: #C62828;
+    font-weight: bold;
+    border: 1px solid #C62828;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,11 +61,12 @@ def custom_sort_lines(linhas):
     return sorted(nums, key=int) + sorted(alfas)
 
 # ==================================================
-# CARREGAR e-CITOP (TXT / CSV) — LAYOUT REAL
+# LEITURA DO e-CITOP (TXT / CSV)
 # ==================================================
 def carregar_ecitop(file):
     if not file:
         return None
+
     try:
         df = pd.read_csv(
             file,
@@ -52,53 +75,31 @@ def carregar_ecitop(file):
             engine="python"
         )
 
-        # Índices REAIS do layout do e-CITOP
-        df = df.iloc[:, [
-            1,   # Nome Operadora
-            4,   # Código Externo Linha
-            26,  # Data Hora Saída Terminal
-            39,  # Terminal (PC)
-            25   # Tipo Viagem
-        ]].copy()
+        col_map = {
+            "Código Externo Linha": "linha",
+            "Nome Operadora": "operadora",
+            "Tipo Viagem": "tipo_viagem",
+            "Data Hora Saída Terminal": "saida_real"
+        }
 
-        df.columns = [
-            "operadora",
-            "linha",
-            "saida_real",
-            "terminal",
-            "tipo_viagem"
-        ]
+        df = df[list(col_map.keys())].copy()
+        df.columns = list(col_map.values())
 
-        df["linha_limpa"] = (
-            df["linha"]
-            .astype(str)
-            .str.strip()
-            .str.lstrip("0")
-        )
-
-        df["terminal"] = (
-            df["terminal"]
-            .astype(str)
-            .str.replace(".0", "", regex=False)
-            .str.strip()
-        )
-
+        df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip("0")
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors="coerce")
+        df["tipo_viagem"] = df["tipo_viagem"].astype(str)
 
-        # Viagens comerciais (não ociosas) e PCs válidos
-        df = df[
-            (~df["tipo_viagem"].astype(str).str.contains("oci", case=False, na=False)) &
-            (df["terminal"].isin(["1", "2"]))
-        ]
+        # Apenas viagens comerciais
+        df = df[df["tipo_viagem"].str.contains("Nor", case=False, na=False)]
 
         return df.dropna(subset=["saida_real"])
 
     except Exception as e:
-        st.error(f"Erro no e-CITOP: {e}")
+        st.error(f"Erro ao ler e-CITOP: {e}")
         return None
 
 # ==================================================
-# PROCESSAR BASE — NÃO REALIZADAS SEM REFORÇO
+# PROCESSAMENTO DAS BASES
 # ==================================================
 def processar_bases(files):
     if not files:
@@ -119,59 +120,44 @@ def processar_bases(files):
 
     df = pd.concat(dfs, ignore_index=True)
 
-    # Colunas fixas da base
+    # Colunas esperadas
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
 
-    df["linha_limpa"] = (
-        df["linha"]
-        .astype(str)
-        .str.strip()
-        .str.lstrip("0")
-    )
-
     df["empresa"] = df["empresa"].astype(str)
+    df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip("0")
     df["sentido"] = df["sentido"].astype(str).str.lower().str.strip()
     df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
     df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], dayfirst=True, errors="coerce")
 
     df = df.dropna(subset=["inicio_prog"])
 
-    nao = df[df["atividade"] == "não realizada"]
-    reforco = df[df["atividade"] == "reforço"]
-    realizadas = df[df["atividade"] != "não realizada"]
+    # Apenas NÃO REALIZADA
+    nao = df[df["atividade"] == "não realizada"].copy()
+    ref = df[df["atividade"] == "reforço"].copy()
 
     falhas = []
 
     for (linha, sentido), grp in nao.groupby(["linha_limpa", "sentido"]):
-        ref_l = reforco[
-            (reforco["linha_limpa"] == linha) &
-            (reforco["sentido"] == sentido)
+        ref_f = ref[
+            (ref["linha_limpa"] == linha) &
+            (ref["sentido"] == sentido)
         ].sort_values("inicio_prog")
 
         usados = set()
 
         for _, nr in grp.sort_values("inicio_prog").iterrows():
-            cands = ref_l[
-                (~ref_l.index.isin(usados)) &
-                (abs(ref_l["inicio_prog"] - nr["inicio_prog"]) <= timedelta(minutes=15))
+            cands = ref_f[
+                (~ref_f.index.isin(usados)) &
+                (abs(ref_f["inicio_prog"] - nr["inicio_prog"]) <= timedelta(minutes=15))
             ]
 
-            if not cands.empty:
+            if cands.empty:
+                falha = nr.to_dict()
+                falha["uid"] = str(uuid.uuid4())
+                falhas.append(falha)
+            else:
                 usados.add(cands.index[0])
-                continue  # tinha reforço → ignora
-
-            # Inferir operadora por viagem realizada da mesma linha
-            op = "DESCONHECIDA"
-            cand = realizadas[realizadas["linha_limpa"] == linha].copy()
-            if not cand.empty:
-                cand["diff"] = abs(cand["inicio_prog"] - nr["inicio_prog"])
-                op = cand.sort_values("diff").iloc[0]["empresa"]
-
-            falha = nr.to_dict()
-            falha["empresa"] = op
-            falha["uid"] = str(uuid.uuid4())
-            falhas.append(falha)
 
     return pd.DataFrame(falhas)
 
@@ -180,10 +166,13 @@ def processar_bases(files):
 # ==================================================
 st.sidebar.header("📁 Upload de Arquivos")
 files_base = st.sidebar.file_uploader(
-    "Planilhas Base", type=["csv", "xlsx"], accept_multiple_files=True
+    "Planilhas Base",
+    type=["csv", "xlsx"],
+    accept_multiple_files=True
 )
 file_ecitop = st.sidebar.file_uploader(
-    "Relatório e-CITOP (TXT ou CSV)", type=["txt", "csv"]
+    "Relatório e-CITOP (CSV ou TXT)",
+    type=["csv", "txt"]
 )
 
 df_base = processar_bases(files_base)
@@ -192,17 +181,17 @@ df_ecitop = carregar_ecitop(file_ecitop)
 # ==================================================
 # EXIBIÇÃO
 # ==================================================
-tab1, tab2, tab3 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA", "🔄 LINHA 2 (MISTA)"])
+def exibir(df_base, df_ecitop, filtro_empresa="", linha2=False):
 
-def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
     if df_base is None or df_base.empty:
         st.info("Aguardando upload das planilhas base...")
         return
 
     df_view = df_base.copy()
+
     if linha2:
         df_view = df_view[df_view["linha_limpa"] == "2"]
-    else:
+    elif filtro_empresa:
         df_view = df_view[df_view["empresa"].str.contains(filtro_empresa, case=False, na=False)]
 
     if df_view.empty:
@@ -215,23 +204,14 @@ def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
 
         for _, r in df_l.iterrows():
             h = r["inicio_prog"]
-            terminal = "1" if r["sentido"] == "ida" else "2"
-            css = "pc1-box" if terminal == "1" else "pc2-box"
 
             st.markdown(f"**🕒 {h.strftime('%H:%M')}**")
-            st.markdown(
-                f'<div class="{css}">PC{terminal} ({r["sentido"].capitalize()})</div>',
-                unsafe_allow_html=True
-            )
-            st.caption(f"🏢 Operadora inferida: {r['empresa']}")
+            st.markdown(f'<div class="pc-box">{r["sentido"].capitalize()}</div>', unsafe_allow_html=True)
 
             confirmado = False
 
             if df_ecitop is not None:
-                m = df_ecitop[
-                    (df_ecitop["linha_limpa"] == linha) &
-                    (df_ecitop["terminal"] == terminal)
-                ]
+                m = df_ecitop[df_ecitop["linha_limpa"] == linha]
 
                 if not m.empty:
                     m = m.assign(diff=abs(m["saida_real"] - h))
@@ -251,11 +231,19 @@ def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
                     '<div class="auto-fail">❌ Não confirmado no e-CITOP</div>',
                     unsafe_allow_html=True
                 )
+
         st.markdown("---")
+
+# ==================================================
+# ABAS
+# ==================================================
+tab1, tab2, tab3 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA", "🔄 LINHA 2 (MISTA)"])
 
 with tab1:
     exibir(df_base, df_ecitop, "JOAO")
+
 with tab2:
     exibir(df_base, df_ecitop, "ROSA")
+
 with tab3:
-    exibir(df_base, df_ecitop, "", linha2=True)
+    exibir(df_base, df_ecitop, linha2=True)
