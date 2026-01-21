@@ -88,7 +88,7 @@ def carregar_ecitop(file):
         return None
 
 # ==================================================
-# PROCESSAR BASES (COM INFERÊNCIA DE OPERADORA)
+# PROCESSAR BASES (APENAS NÃO REALIZADAS SEM REFORÇO)
 # ==================================================
 def processar_bases(files):
     if not files:
@@ -127,26 +127,41 @@ def processar_bases(files):
     df = df.dropna(subset=["inicio_prog"])
 
     nao = df[df["atividade"] == "não realizada"].copy()
+    reforco = df[df["atividade"] == "reforço"].copy()
     realizadas = df[df["atividade"] != "não realizada"].copy()
 
     falhas = []
 
-    for _, nr in nao.iterrows():
-        linha = nr["linha_limpa"]
+    for (linha, sentido), grp in nao.groupby(["linha_limpa", "sentido"]):
+        ref_l = reforco[
+            (reforco["linha_limpa"] == linha) &
+            (reforco["sentido"] == sentido)
+        ].sort_values("inicio_prog")
 
-        # 🔎 Inferir operadora a partir de viagem realizada da mesma linha
-        cand = realizadas[realizadas["linha_limpa"] == linha].copy()
+        usados = set()
 
-        operadora_inf = "DESCONHECIDA"
+        for _, nr in grp.sort_values("inicio_prog").iterrows():
+            cands = ref_l[
+                (~ref_l.index.isin(usados)) &
+                (abs(ref_l["inicio_prog"] - nr["inicio_prog"]) <= timedelta(minutes=15))
+            ]
 
-        if not cand.empty:
-            cand["diff"] = abs(cand["inicio_prog"] - nr["inicio_prog"])
-            operadora_inf = cand.sort_values("diff").iloc[0]["empresa"]
+            if not cands.empty:
+                usados.add(cands.index[0])
+                continue  # ❗ TEM REFORÇO → IGNORA
 
-        falha = nr.to_dict()
-        falha["empresa"] = operadora_inf
-        falha["uid"] = str(uuid.uuid4())
-        falhas.append(falha)
+            # 🔎 Inferir operadora por viagem realizada da mesma linha
+            cand_op = realizadas[realizadas["linha_limpa"] == linha].copy()
+            operadora_inf = "DESCONHECIDA"
+
+            if not cand_op.empty:
+                cand_op["diff"] = abs(cand_op["inicio_prog"] - nr["inicio_prog"])
+                operadora_inf = cand_op.sort_values("diff").iloc[0]["empresa"]
+
+            falha = nr.to_dict()
+            falha["empresa"] = operadora_inf
+            falha["uid"] = str(uuid.uuid4())
+            falhas.append(falha)
 
     return pd.DataFrame(falhas)
 
