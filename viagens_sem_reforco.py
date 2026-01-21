@@ -39,20 +39,30 @@ if st.sidebar.button("🗑️ Limpar Memória"):
 def carregar_ecitop(file):
     if file is None: return None
     try:
+        # Tenta ler com diferentes encodings comuns em sistemas brasileiros
         try:
             df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
         except:
             df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
         
+        # Selecionando colunas baseadas no arquivo relopemapadecontroleoperacional [cite: 11538]
+        # Coluna 4: Código Externo Linha, Coluna 6: Num Terminal, Coluna 26: Data Hora Saída Terminal
         df = df.iloc[:, [1, 4, 6, 7, 26]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida_real"]
+        
+        # Filtra viagens ociosas
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
+        
+        # CORREÇÃO DE DATA: O e-CITOP usa formato YYYY-MM-DD HH:MM:SS.0 
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors='coerce')
+        
+        # Normalização para cruzamento
         df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
-        df["operadora"] = df["operadora"].astype(str).str.upper()
+        df["num_terminal"] = df["num_terminal"].astype(str).str.strip()
+        
         return df.dropna(subset=["saida_real"])
     except Exception as e:
-        st.error(f"Erro no e-CITOP: {e}")
+        st.error(f"Erro no processamento do e-CITOP: {e}")
         return None
 
 def processar_bases_unificadas(uploaded_files):
@@ -69,16 +79,19 @@ def processar_bases_unificadas(uploaded_files):
     
     if not dfs: return None
     df = pd.concat(dfs, ignore_index=True)
+    
+    # Estrutura baseada no relExportacaoViagem 
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
     
     df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
     df["sentido"] = df["sentido"].astype(str).str.lower().str.strip()
     df["atividade"] = df["atividade"].astype(str).str.lower().str.strip()
-    df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], errors="coerce")
+    
+    # CORREÇÃO DE DATA: A base usa DD/MM/YYYY HH:MM:SS 
+    df["inicio_prog"] = pd.to_datetime(df["inicio_prog"], dayfirst=True, errors="coerce")
+    
     df = df[df["sentido"] != "ocioso"]
-
-    mapa_empresas = df[df["empresa"].notna() & (df["empresa"] != "")].groupby("linha_limpa")["empresa"].first().to_dict()
 
     nao_realizadas = df[df["atividade"] == "não realizada"].copy()
     reforcos = df[df["atividade"] == "reforço"].copy()
@@ -89,11 +102,9 @@ def processar_bases_unificadas(uploaded_files):
         grupo_ref["usado"] = False
         
         for idx, nr in grupo_nr.sort_values("inicio_prog").iterrows():
+            # Margem de 15 min para bater reforço com não realizada
             cands = grupo_ref[(~grupo_ref["usado"]) & (abs(grupo_ref["inicio_prog"] - nr["inicio_prog"]) <= timedelta(minutes=15))]
             if cands.empty:
-                if (pd.isna(nr["empresa"]) or nr["empresa"] == "") and linha != "2":
-                    nr["empresa"] = mapa_empresas.get(linha, "DESCONHECIDA")
-                
                 nr_dict = nr.to_dict()
                 nr_dict['id_original'] = idx
                 falhas.append(nr_dict)
@@ -101,9 +112,6 @@ def processar_bases_unificadas(uploaded_files):
                 grupo_ref.loc[cands.index[0], "usado"] = True
     
     df_falhas = pd.DataFrame(falhas)
-    
-    # --- LOGICA SOLICITADA: REMOVER DUPLICATAS ---
-    # Se houver duas falhas na mesma linha, sentido e horário, mantém apenas uma.
     if not df_falhas.empty:
         df_falhas = df_falhas.drop_duplicates(subset=["linha_limpa", "sentido", "inicio_prog"])
         
@@ -117,46 +125,43 @@ df_citop_total = carregar_ecitop(file_ecitop)
 
 tab1, tab2, tab3 = st.tabs(["🏛️ SÃO JOÃO", "🌹 ROSA", "🔄 LINHA 2 (MISTA)"])
 
-def natural_sort_key(s):
-    return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', str(s))]
-
 def exibir(df_falhas, df_ecitop, termo_operadora, prefixo_aba, filtro_linha_2=False):
     if df_falhas is None or df_falhas.empty:
-        st.info("Aguardando upload das bases...")
+        st.info("Aguardando upload...")
         return
 
     if filtro_linha_2:
         df_exibir = df_falhas[df_falhas["linha_limpa"] == "2"]
     else:
-        df_exibir = df_falhas[(df_falhas["linha_limpa"] != "2") & (df_falhas["empresa"].astype(str).str.upper().str.contains(termo_operadora, na=False))]
+        df_exibir = df_falhas[(df_falhas["linha_limpa"] != "2") & (df_falhas["empresa"].astype(str).upper().str.contains(termo_operadora, na=False))]
 
     if df_exibir.empty:
         st.success("✅ Tudo em ordem.")
         return
 
-    linhas_ord = sorted(df_exibir["linha_limpa"].unique(), key=natural_sort_key)
-
-    for linha in linhas_ord:
+    for linha in sorted(df_exibir["linha_limpa"].unique()):
         st.markdown(f"### 🚍 Linha {linha}")
         df_l = df_exibir[df_exibir["linha_limpa"] == linha].sort_values("inicio_prog")
         
         for _, row in df_l.iterrows():
             h_prog = row["inicio_prog"]
-            if pd.isna(h_prog): continue
-            
+            # Identifica terminal (Ida = 1, Volta = 2) 
             num_term = "1" if "ida" in str(row["sentido"]).lower() else "2"
+            
             st.markdown(f"**🕒 {h_prog.strftime('%H:%M')}**")
             cor = "pc1-box" if num_term == "1" else "pc2-box"
             st.markdown(f'<div class="{cor}">PC{num_term} ({str(row["sentido"]).capitalize()})</div>', unsafe_allow_html=True)
 
             confirmado_auto = False
             if df_ecitop is not None:
-                match = df_ecitop[(df_ecitop["linha_limpa"] == linha) & (df_ecitop["num_terminal"].astype(str) == num_term)]
-                match_time = match[abs(match["saida_real"] - h_prog) <= timedelta(minutes=15)]
+                # O e-CITOP usa '1' ou '2' para terminais de saída [cite: 11544, 11616]
+                match = df_ecitop[(df_ecitop["linha_limpa"] == linha) & (df_ecitop["num_terminal"] == num_term)]
+                # Margem de 20 min para compensar atrasos/adiantamentos no GPS
+                match_time = match[abs(match["saida_real"] - h_prog) <= timedelta(minutes=20)]
                 
                 if not match_time.empty:
                     res = match_time.iloc[0]
-                    st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP | {res["operadora"]} | Saída Real: {res["saida_real"].strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
                     confirmado_auto = True
 
             if not confirmado_auto:
