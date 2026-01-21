@@ -27,7 +27,7 @@ st.markdown("""
 st.title("🚌 Monitor Unificado de Viagens")
 
 # ==================================================
-# FUNÇÕES DE APOIO
+# FUNÇÕES AUXILIARES
 # ==================================================
 def custom_sort_lines(linhas):
     nums, alfas = [], []
@@ -40,7 +40,7 @@ def custom_sort_lines(linhas):
     return sorted(nums, key=int) + sorted(alfas)
 
 # ==================================================
-# CARREGAR E-CITOP (CORRIGIDO)
+# CARREGAR E-CITOP
 # ==================================================
 def carregar_ecitop(file):
     if not file:
@@ -59,7 +59,6 @@ def carregar_ecitop(file):
         df = df[list(colunas.keys())].copy()
         df.columns = list(colunas.values())
 
-        # ---------- NORMALIZAÇÕES ----------
         df["linha_limpa"] = (
             df["linha"]
             .astype(str)
@@ -77,7 +76,6 @@ def carregar_ecitop(file):
 
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors="coerce")
 
-        # ---------- FILTROS ----------
         df = df[
             (df["viagem_tipo"].astype(str).str.contains("Nor", na=False)) &
             (df["terminal"].isin(["1", "2"]))
@@ -90,7 +88,7 @@ def carregar_ecitop(file):
         return None
 
 # ==================================================
-# PROCESSAR BASES
+# PROCESSAR BASES (COM INFERÊNCIA DE OPERADORA)
 # ==================================================
 def processar_bases(files):
     if not files:
@@ -114,7 +112,7 @@ def processar_bases(files):
     df = df.iloc[:, [0, 1, 3, 6, 14]]
     df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_prog"]
 
-    df["empresa"] = df["empresa"].astype(str).fillna("DESCONHECIDA")
+    df["empresa"] = df["empresa"].astype(str)
     df["linha_limpa"] = (
         df["linha"]
         .astype(str)
@@ -129,30 +127,26 @@ def processar_bases(files):
     df = df.dropna(subset=["inicio_prog"])
 
     nao = df[df["atividade"] == "não realizada"].copy()
-    ref = df[df["atividade"] == "reforço"].copy()
+    realizadas = df[df["atividade"] != "não realizada"].copy()
 
     falhas = []
 
-    for (linha, sentido), grp in nao.groupby(["linha_limpa", "sentido"]):
-        ref_f = ref[
-            (ref["linha_limpa"] == linha) &
-            (ref["sentido"] == sentido)
-        ].sort_values("inicio_prog")
+    for _, nr in nao.iterrows():
+        linha = nr["linha_limpa"]
 
-        usados = set()
+        # 🔎 Inferir operadora a partir de viagem realizada da mesma linha
+        cand = realizadas[realizadas["linha_limpa"] == linha].copy()
 
-        for _, nr in grp.sort_values("inicio_prog").iterrows():
-            cands = ref_f[
-                (~ref_f.index.isin(usados)) &
-                (abs(ref_f["inicio_prog"] - nr["inicio_prog"]) <= timedelta(minutes=15))
-            ]
+        operadora_inf = "DESCONHECIDA"
 
-            if cands.empty:
-                falha = nr.to_dict()
-                falha["uid"] = str(uuid.uuid4())
-                falhas.append(falha)
-            else:
-                usados.add(cands.index[0])
+        if not cand.empty:
+            cand["diff"] = abs(cand["inicio_prog"] - nr["inicio_prog"])
+            operadora_inf = cand.sort_values("diff").iloc[0]["empresa"]
+
+        falha = nr.to_dict()
+        falha["empresa"] = operadora_inf
+        falha["uid"] = str(uuid.uuid4())
+        falhas.append(falha)
 
     return pd.DataFrame(falhas)
 
@@ -211,6 +205,7 @@ def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
                 f'<div class="{css}">PC{terminal_alvo} ({r["sentido"].capitalize()})</div>',
                 unsafe_allow_html=True
             )
+            st.caption(f"🏢 Operadora inferida: {r['empresa']}")
 
             confirmado = False
 
@@ -221,13 +216,8 @@ def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
                 ]
 
                 if not match.empty:
-                    match = match.assign(
-                        diff=abs(match["saida_real"] - h_prog)
-                    )
-
-                    match_ok = match[
-                        match["diff"] <= timedelta(minutes=30)
-                    ]
+                    match = match.assign(diff=abs(match["saida_real"] - h_prog))
+                    match_ok = match[match["diff"] <= timedelta(minutes=30)]
 
                     if not match_ok.empty:
                         m = match_ok.sort_values("diff").iloc[0]
