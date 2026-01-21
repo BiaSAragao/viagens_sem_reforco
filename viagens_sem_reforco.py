@@ -6,7 +6,7 @@ from datetime import timedelta
 # CONFIGURAÇÃO DA PÁGINA
 # ==================================================
 st.set_page_config(
-    page_title="Viagens sem Reforço + e-CITOP",
+    page_title="Monitor de Viagens: Base vs e-CITOP",
     page_icon="🚌",
     layout="wide"
 )
@@ -62,20 +62,20 @@ if st.sidebar.button("🗑️ Limpar Memória"):
 def carregar_ecitop(file):
     if file is None: return None
     try:
-        # Tenta ler com encodings diferentes para evitar erro de charmap
+        # Tratamento de encoding para evitar erro de charmap
         try:
             df = pd.read_csv(file, sep=";", encoding="cp1252", engine="python")
         except:
             df = pd.read_csv(file, sep=";", encoding="utf-8", engine="python")
         
-        # Colunas e-CITOP: B(1) Operadora, E(4) Linha, G(6) Terminal, H(7) Viagem, AA(26) Saída
+        # Mapeamento e-CITOP: B(1) Operadora, E(4) Linha, G(6) Terminal, H(7) Viagem, AA(26) Saída
         df = df.iloc[:, [1, 4, 6, 7, 26]]
         df.columns = ["operadora", "linha", "num_terminal", "viagem", "saida_real"]
         
-        # Limpeza: Remove ociosos e converte horários
+        # Filtros: Remove ociosos e normaliza
         df = df[~df["viagem"].astype(str).str.contains("Oci.", na=False)]
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors='coerce')
-        df["linha_limpa"] = df["linha"].astype(str).str.lstrip('0')
+        df["linha_limpa"] = df["linha"].astype(str).str.strip().str.lstrip('0')
         df["operadora"] = df["operadora"].astype(str).str.upper()
         
         return df.dropna(subset=["saida_real"])
@@ -94,7 +94,7 @@ def processar_base(uploaded_file, termo_ignorar):
             except:
                 df = pd.read_csv(uploaded_file, sep=";", encoding="utf-8", engine="python")
 
-        # Colunas Base: 0 Empresa, 1 Linha, 3 Sentido, 6 Atividade, 14 Horário
+        # Colunas Base: 0 Empresa, 1 Linha, 3 Sentido, 6 Atividade, 14 Início Programado
         df = df.iloc[:, [0, 1, 3, 6, 14]]
         df.columns = ["empresa", "linha", "sentido", "atividade", "inicio_programado"]
 
@@ -142,9 +142,15 @@ def exibir_resultados(df_resultado, df_ecitop, operadora_filtro, prefixo):
             if df_ecitop is not None:
                 df_c = df_ecitop[df_ecitop["operadora"].str.contains(operadora_filtro, na=False)]
 
-            for linha in sorted(df_resultado["linha_limpa"].unique()):
+            # --- ORDENAÇÃO NUMÉRICA DAS LINHAS ---
+            # Converte para inteiro apenas na chave de ordenação para que '2' venha antes de '10'
+            linhas_ordenadas = sorted(df_resultado["linha_limpa"].unique(), 
+                                      key=lambda x: int(x) if x.isdigit() else x)
+
+            for linha in linhas_ordenadas:
                 st.markdown(f"### 🚍 Linha {linha}")
-                df_filtrado = df_resultado[df_resultado["linha_limpa"] == linha]
+                # Filtra e ordena por horário cronológico
+                df_filtrado = df_resultado[df_resultado["linha_limpa"] == linha].sort_values("inicio_programado")
                 
                 for _, row in df_filtrado.iterrows():
                     h_prog = row["inicio_programado"]
@@ -159,11 +165,11 @@ def exibir_resultados(df_resultado, df_ecitop, operadora_filtro, prefixo):
                     # Lógica de Cruzamento Automático
                     confirmado_auto = False
                     if df_c is not None:
-                        # Busca no e-CITOP: mesma linha, mesmo terminal, dentro de 15 min
                         match = df_c[
                             (df_c["linha_limpa"] == linha) & 
                             (df_c["num_terminal"].astype(str) == num_term_alvo)
                         ]
+                        # Janela de 15 minutos entre programado e realizado
                         match_time = match[abs(match["saida_real"] - h_prog) <= timedelta(minutes=15)]
                         
                         if not match_time.empty:
@@ -171,9 +177,9 @@ def exibir_resultados(df_resultado, df_ecitop, operadora_filtro, prefixo):
                             h_real = match_time.iloc[0]["saida_real"].strftime("%H:%M:%S")
                             st.markdown(f'<div class="auto-check">✅ Confirmado no e-CITOP (Saída: {h_real})</div>', unsafe_allow_html=True)
 
-                    # Botão Manual (apenas se não confirmou automático)
+                    # Botão Manual (apenas se não houver confirmação automática)
+                    id_v = f"{prefixo}_{linha}_{h_prog.strftime('%H%M')}_{num_term_alvo}"
                     if not confirmado_auto:
-                        id_v = f"{prefixo}_{linha}_{h_prog.strftime('%H%M')}_{num_term_alvo}"
                         if id_v in st.session_state.validacoes:
                             if st.button(f"✅ Validado Manualmente (Desfazer)", key=id_v, type="primary"):
                                 del st.session_state.validacoes[id_v]
