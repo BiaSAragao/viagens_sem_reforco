@@ -12,15 +12,14 @@ st.set_page_config(
     layout="wide"
 )
 
-if "validacoes" not in st.session_state:
-    st.session_state.validacoes = {}
-
 st.markdown("""
 <style>
 .pc1-box { padding: 8px; border-radius: 5px; background-color: #FFA500; color: white; font-weight: bold; width: 220px; }
 .pc2-box { padding: 8px; border-radius: 5px; background-color: #1E90FF; color: white; font-weight: bold; width: 220px; }
 .auto-check { border-left: 5px solid #2E7D32; background-color: #e8f5e9; padding: 10px; margin: 6px 0;
               border-radius: 5px; color: #2E7D32; font-weight: bold; border: 1px solid #2E7D32; }
+.auto-fail { border-left: 5px solid #C62828; background-color: #fdecea; padding: 10px; margin: 6px 0;
+             border-radius: 5px; color: #C62828; font-weight: bold; border: 1px solid #C62828; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,7 +69,6 @@ def carregar_ecitop(file):
             "tipo_viagem"
         ]
 
-        # Normalizações
         df["linha_limpa"] = (
             df["linha"]
             .astype(str)
@@ -87,7 +85,7 @@ def carregar_ecitop(file):
 
         df["saida_real"] = pd.to_datetime(df["saida_real"], errors="coerce")
 
-        # Filtro correto: viagens comerciais (não ociosas) e PCs válidos
+        # Viagens comerciais (não ociosas) e PCs válidos
         df = df[
             (~df["tipo_viagem"].astype(str).str.contains("oci", case=False, na=False)) &
             (df["terminal"].isin(["1", "2"]))
@@ -100,7 +98,7 @@ def carregar_ecitop(file):
         return None
 
 # ==================================================
-# PROCESSAR BASES — SOMENTE NÃO REALIZADAS SEM REFORÇO
+# PROCESSAR BASE — NÃO REALIZADAS SEM REFORÇO
 # ==================================================
 def processar_bases(files):
     if not files:
@@ -161,7 +159,7 @@ def processar_bases(files):
 
             if not cands.empty:
                 usados.add(cands.index[0])
-                continue  # tem reforço → ignora
+                continue  # tinha reforço → ignora
 
             # Inferir operadora por viagem realizada da mesma linha
             op = "DESCONHECIDA"
@@ -187,10 +185,6 @@ files_base = st.sidebar.file_uploader(
 file_ecitop = st.sidebar.file_uploader(
     "Relatório e-CITOP (TXT ou CSV)", type=["txt", "csv"]
 )
-
-if st.sidebar.button("🗑️ Limpar Validações"):
-    st.session_state.validacoes = {}
-    st.rerun()
 
 df_base = processar_bases(files_base)
 df_ecitop = carregar_ecitop(file_ecitop)
@@ -253,15 +247,10 @@ def exibir(df_base, df_ecitop, filtro_empresa, linha2=False):
                         confirmado = True
 
             if not confirmado:
-                key = f"manual_{r['uid']}"
-                if key in st.session_state.validacoes:
-                    st.success("Validado Manualmente")
-                else:
-                    st.button(
-                        "Confirmar Manual",
-                        key=key,
-                        on_click=lambda k=key: st.session_state.validacoes.update({k: True})
-                    )
+                st.markdown(
+                    '<div class="auto-fail">❌ Não confirmado no e-CITOP</div>',
+                    unsafe_allow_html=True
+                )
         st.markdown("---")
 
 with tab1:
