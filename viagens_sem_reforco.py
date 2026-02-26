@@ -177,9 +177,11 @@ with tab3:
             df_ext = pd.read_csv(StringIO("\n".join(clean_lines)), sep=";", engine='python', dtype=str, header=0)
             
             df_aux = pd.DataFrame({
-                "col_linha": df_ext.iloc[:, 4].astype(str).str.strip().str.lstrip('0'),
-                "col_term": df_ext.iloc[:, 6].astype(str).str.strip(),
-                "col_hora": df_ext.iloc[:, 26].astype(str).str.strip()
+                 "col_linha": df_ext.iloc[:, 4].astype(str).str.strip().str.lstrip('0'),
+                 "col_term": df_ext.iloc[:, 6].astype(str).str.strip(),
+                 "col_saida": df_ext["Data Hora Saída Terminal"].astype(str).str.strip(),
+                 "col_inicio": df_ext["Data Hora Início"].astype(str).str.strip(),
+                 "col_passageiros": pd.to_numeric(df_ext["Passageiros"], errors="coerce").fillna(0)
             })
 
             def extrair_hhmm(valor):
@@ -202,13 +204,28 @@ with tab3:
                 hora_real_encontrada = "---"
 
                 for _, reg in matches_linha.iterrows():
-                    h_ext_str = extrair_hhmm(reg["col_hora"])
-                    if h_ext_str:
-                        h_ext_obj = pd.to_datetime(h_ext_str, format="%H:%M")
+
+                    hora_usada = None
+                    
+                    # 1️⃣ PRIORIDADE → Data Hora Saída Terminal
+                    if reg["col_saida"] and reg["col_saida"].lower() != "nan":
+                        hora_usada = extrair_hhmm(reg["col_saida"])
+                    
+                    # 2️⃣ SE ESTIVER VAZIA → usar Data Hora Início
+                    else:
+                        if reg["col_passageiros"] >= 1:
+                            hora_usada = extrair_hhmm(reg["col_inicio"])
+                        else:
+                            # Passageiros zerado = viagem não realizada
+                            continue
+                
+                    if hora_usada:
+                        h_ext_obj = pd.to_datetime(hora_usada, format="%H:%M")
                         diff = abs((h_ext_obj - h_site_obj).total_seconds() / 60)
+                
                         if diff <= 10:
                             sucesso = True
-                            hora_real_encontrada = h_ext_str
+                            hora_real_encontrada = hora_usada
                             break
 
                 criticas.append({
@@ -246,3 +263,4 @@ with tab3:
 
         except Exception as e:
             st.error(f"Erro ao processar: {e}")
+
