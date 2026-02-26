@@ -213,11 +213,11 @@ with tab3:
             # DATAFRAME AUXILIAR
             # =============================
             df_aux = pd.DataFrame({
-                "col_linha": df_ext.iloc[:, 4].astype(str).str.strip().str.lstrip('0'),
-                "col_term": df_ext.iloc[:, 6].astype(str).str.strip(),
-                "col_saida": df_ext[col_saida].astype(str).str.strip() if col_saida else "",
-                "col_inicio": df_ext[col_inicio].astype(str).str.strip(),
-                "col_passageiros": pd.to_numeric(df_ext[col_passageiros], errors="coerce").fillna(0)
+               "col_linha": df_ext["Código Externo Linha"].astype(str).str.strip().str.lstrip('0'),
+               "col_term": df_ext["Num Terminal"].astype(str).str.strip(),
+               "col_saida": df_ext["Data Hora Saída Terminal"].astype(str).str.strip(),
+               "col_inicio": df_ext["Data Hora Início"].astype(str).str.strip(),
+               "col_passageiros": pd.to_numeric(df_ext["Passageiros"], errors="coerce").fillna(0)
             })
 
             # =============================
@@ -322,3 +322,4 @@ with tab3:
 
         except Exception as e:
             st.error(f"Erro ao processar: {e}")
+
