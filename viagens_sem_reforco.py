@@ -172,57 +172,19 @@ with tab3:
     
     if file_auditoria and not df_para_exportar.empty:
         try:
-            # =============================
-            # LEITURA DO ARQUIVO
-            # =============================
             raw = file_auditoria.read().decode('latin-1')
             clean_lines = [l for l in raw.splitlines() if ';' in l and not l.strip().startswith('[source')]
-            df_ext = pd.read_csv(
-                StringIO("\n".join(clean_lines)),
-                sep=";",
-                engine='python',
-                dtype=str,
-                header=0
-            )
-
-            # =============================
-            # NORMALIZAÇÃO DOS NOMES
-            # =============================
-            df_ext.columns = (
-                df_ext.columns
-                .str.strip()
-                .str.lower()
-            )
-
-            # Função para localizar coluna por palavra-chave
-            def encontrar_coluna(parte_nome):
-                for col in df_ext.columns:
-                    if parte_nome in col:
-                        return col
-                return None
-
-            col_saida = encontrar_coluna("saida")
-            col_inicio = encontrar_coluna("inicio")
-            col_passageiros = encontrar_coluna("passageiro")
-
-            if not col_inicio or not col_passageiros:
-                st.error("❌ Não foi possível localizar as colunas necessárias no arquivo do e-CITOP.")
-                st.stop()
-
-            # =============================
-            # DATAFRAME AUXILIAR
-            # =============================
+            df_ext = pd.read_csv(StringIO("\n".join(clean_lines)), sep=";", engine='python', dtype=str, header=0)
+            
+            # MESMA LÓGICA ANTIGA (usando posição das colunas)
             df_aux = pd.DataFrame({
-               "col_linha": df_ext["Código Externo Linha"].astype(str).str.strip().str.lstrip('0'),
-               "col_term": df_ext["Num Terminal"].astype(str).str.strip(),
-               "col_saida": df_ext["Data Hora Saída Terminal"].astype(str).str.strip(),
-               "col_inicio": df_ext["Data Hora Início"].astype(str).str.strip(),
-               "col_passageiros": pd.to_numeric(df_ext["Passageiros"], errors="coerce").fillna(0)
+                "col_linha": df_ext.iloc[:, 4].astype(str).str.strip().str.lstrip('0'),
+                "col_term": df_ext.iloc[:, 6].astype(str).str.strip(),
+                "col_saida": df_ext.iloc[:, 26].astype(str).str.strip(),   # Data Hora Saída Terminal
+                "col_pass": pd.to_numeric(df_ext.iloc[:, 28], errors="coerce").fillna(0),  # Passageiros
+                "col_inicio": df_ext.iloc[:, 42].astype(str).str.strip()  # Data Hora Início
             })
 
-            # =============================
-            # FUNÇÃO PARA EXTRAIR HH:MM
-            # =============================
             def extrair_hhmm(valor):
                 try:
                     dt = pd.to_datetime(valor, errors='coerce')
@@ -230,13 +192,9 @@ with tab3:
                 except:
                     return None
 
-            # =============================
-            # CONFRONTO
-            # =============================
             criticas = []
 
             for _, falha in df_para_exportar.iterrows():
-
                 l_site = str(falha["linha"]).strip().lstrip('0')
                 pc_site = "1" if falha["sentido"] == "ida" else "2"
                 h_site_str = falha["inicio_programado"].strftime("%H:%M")
@@ -254,16 +212,16 @@ with tab3:
 
                     hora_usada = None
 
-                    # PRIORIDADE 1 → Saída Terminal
-                    if col_saida and reg["col_saida"] and reg["col_saida"].lower() != "nan":
+                    # 1️⃣ PRIORIDADE → Data Hora Saída Terminal
+                    if reg["col_saida"] and reg["col_saida"].lower() != "nan":
                         hora_usada = extrair_hhmm(reg["col_saida"])
 
-                    # PRIORIDADE 2 → Início (somente se passageiros >= 1)
+                    # 2️⃣ SE ESTIVER VAZIA → usar Data Hora Início (somente se passageiros >= 1)
                     else:
-                        if reg["col_passageiros"] >= 1:
+                        if reg["col_pass"] >= 1:
                             hora_usada = extrair_hhmm(reg["col_inicio"])
                         else:
-                            continue  # passageiros 0 = não realizada
+                            continue  # Passageiros 0 = viagem não realizada
 
                     if hora_usada:
                         h_ext_obj = pd.to_datetime(hora_usada, format="%H:%M")
@@ -282,24 +240,22 @@ with tab3:
                     "Hora Real": hora_real_encontrada
                 })
 
-            # =============================
             # EXIBIÇÃO
-            # =============================
             df_final = pd.DataFrame(criticas)
 
             st.subheader("📊 Filtrar Resultados")
-
             opcoes_linhas = sorted(df_final["Linha"].unique())
+            
             selecionar_tudo = st.checkbox("Selecionar todas as linhas")
 
             linhas_selecionadas = st.multiselect(
-                "Pesquise ou selecione as linhas:",
-                options=opcoes_linhas,
+                "Pesquise ou selecione as linhas:", 
+                options=opcoes_linhas, 
                 default=opcoes_linhas if selecionar_tudo else []
             )
-
+            
             df_exibicao = df_final[df_final["Linha"].isin(linhas_selecionadas)]
-
+            
             def colorir_status(val):
                 color = '#d4edda' if "CONSTA" in val else '#f8d7da'
                 return f'background-color: {color}'
@@ -308,12 +264,8 @@ with tab3:
                 df_exibicao.style.applymap(colorir_status, subset=['Status']),
                 use_container_width=True
             )
-
-            # =============================
-            # DOWNLOAD
-            # =============================
+            
             csv = df_final.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-
             st.download_button(
                 "📥 Baixar Relatório de Auditoria Completo",
                 csv,
@@ -322,4 +274,3 @@ with tab3:
 
         except Exception as e:
             st.error(f"Erro ao processar: {e}")
-
