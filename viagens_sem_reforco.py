@@ -227,7 +227,7 @@ with tab3:
                         h_ext_obj = pd.to_datetime(hora_usada, format="%H:%M")
                         diff = abs((h_ext_obj - h_site_obj).total_seconds() / 60)
 
-                        if diff <= 10:
+                        if diff <= 15:
                             sucesso = True
                             hora_real_encontrada = hora_usada
                             break
@@ -274,3 +274,4 @@ with tab3:
 
         except Exception as e:
             st.error(f"Erro ao processar: {e}")
+
